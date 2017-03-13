@@ -2,7 +2,7 @@ MOD_NAME=project4
 obj-m += $(MOD_NAME).o
 
 INSTALL_TARGET=user@192.168.53.89:~
-KDIR=/home/zxcve/workspace/VM/linux-4.0.9
+KDIR=/home/zxcve/Project4/linux-4.0.9
 
 all:
 	make -C $(KDIR) M=$(PWD) modules

@@ -11,10 +11,12 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/pagemap.h> 	/* PAGE_CACHE_SIZE */
-#include <linux/fs.h>     	/* This is where libfs stuff is declared */
-#include <asm/atomic.h>
+#include <linux/slab.h>
+#include <linux/pagemap.h>
+#include <linux/fs.h>
+#include <linux/sched.h>
 #include <asm/uaccess.h>	/* copy_to_user */
+#include <asm/atomic.h>
 
 /*
  * Boilerplate stuff.
@@ -37,8 +39,10 @@ static struct inode *lfs_make_inode(struct super_block *sb, int mode)
 	struct inode *ret = new_inode(sb);
 
 	if (ret) {
+		ret->i_ino = get_next_ino();
 		ret->i_mode = mode;
-	//	ret->i_uid = ret->i_gid = 0;
+	//	ret->i_uid = 0;
+	//	ret->i_gid = 0;
 		ret->i_blocks = 0;
 		ret->i_atime = ret->i_mtime = ret->i_ctime = CURRENT_TIME;
 	}
@@ -67,18 +71,78 @@ static int lfs_open(struct inode *inode, struct file *filp)
  * at the beginning of the file (offset = 0); otherwise we end up counting
  * by twos.
  */
+
+static ssize_t lfs_read_thread_file(struct file *filp, char *buf,
+		size_t count, loff_t *offset)
+{
+	char tmp[TMPSIZE] = "hello world\n";
+
+	count = 12;
+
+	if (*offset != 0)
+		return 0;
+
+	if (copy_to_user(buf, tmp, 12))
+		return -EFAULT;
+
+	*offset += count;
+	return count;
+}
+
+
+static ssize_t lfs_read_file(struct file *filp, char *buf,
+		size_t count, loff_t *offset)
+{
+	int *signal_ptr = (int *) filp->private_data;
+	char tmp[TMPSIZE];
+	int len;
+
+	if (*offset != 0)
+		return 0;
+
+	len = snprintf(tmp, TMPSIZE, "%d\n", *signal_ptr);
+	if (copy_to_user(buf, tmp, len))
+		return -EFAULT;
+
+	*offset += len;
+	return len;
+}
+
+static ssize_t lfs_write_file(struct file *filp, const char *buf,
+		size_t count, loff_t *offset)
+{
+	int *signal_ptr = (int *) filp->private_data;
+	char tmp[TMPSIZE];
+
+	if (*offset != 0)
+		return -EINVAL;
+
+	memset(tmp, 0, TMPSIZE);
+	if (copy_from_user(tmp, buf, count))
+		return -EINVAL;
+
+	*signal_ptr = (int)simple_strtol(tmp, NULL, 10);
+
+	printk(KERN_INFO "Signal %d delivered for PID", *signal_ptr);
+	return count;
+}
+
+
+static ssize_t lfs_write_thread_file(struct file *filp, const char *buf,
+		size_t count, loff_t *offset)
+{
+	return -EINVAL;
+}
+/*
 static ssize_t lfs_read_file(struct file *filp, char *buf,
 		size_t count, loff_t *offset)
 {
 	atomic_t *counter = (atomic_t *) filp->private_data;
 	int v, len;
 	char tmp[TMPSIZE];
-/*
- * Encode the value, and figure out how much of it we can pass back.
- */
 	v = atomic_read(counter);
 	if (*offset > 0)
-		v -= 1;  /* the value returned when offset was zero */
+		v -= 1; 
 	else
 		atomic_inc(counter);
 	len = snprintf(tmp, TMPSIZE, "%d\n", v);
@@ -86,60 +150,57 @@ static ssize_t lfs_read_file(struct file *filp, char *buf,
 		return 0;
 	if (count > len - *offset)
 		count = len - *offset;
-/*
- * Copy it back, increment the offset, and we're done.
- */
 	if (copy_to_user(buf, tmp + *offset, count))
 		return -EFAULT;
 	*offset += count;
 	return count;
 }
 
-/*
- * Write a file.
- */
 static ssize_t lfs_write_file(struct file *filp, const char *buf,
 		size_t count, loff_t *offset)
 {
 	atomic_t *counter = (atomic_t *) filp->private_data;
 	char tmp[TMPSIZE];
-/*
- * Only write from the beginning.
- */
 	if (*offset != 0)
 		return -EINVAL;
-/*
- * Read the value from the user.
- */
 	if (count >= TMPSIZE)
 		return -EINVAL;
 	memset(tmp, 0, TMPSIZE);
 	if (copy_from_user(tmp, buf, count))
 		return -EFAULT;
-/*
- * Store it in the counter and we are done.
- */
 	atomic_set(counter, simple_strtol(tmp, NULL, 10));
 	return count;
 }
-
+*/
+int lfs_release (struct inode *inode, struct file *filep)
+{
+	//kfree(inode->i_private);
+	return 0;
+}
 
 /*
  * Now we can put together our file operations structure.
  */
 static struct file_operations lfs_file_ops = {
 	.open	= lfs_open,
-	.read 	= lfs_read_file,
+	.read	= lfs_read_file,
 	.write  = lfs_write_file,
+	.release  = lfs_release
 };
 
+static struct file_operations lfs_thread_file_ops = {
+	.open	= lfs_open,
+	.read	= lfs_read_thread_file,
+	.write  = lfs_write_thread_file,
+	.release  = lfs_release
+};
 
+unsigned long long  counter = 0;
 /*
  * Create a file mapping a name to a counter.
  */
 static struct dentry *lfs_create_file (struct super_block *sb,
-		struct dentry *dir, const char *name,
-		atomic_t *counter)
+		struct dentry *dir, const char *name, int thread_file)
 {
 	struct dentry *dentry;
 	struct inode *inode;
@@ -159,8 +220,14 @@ static struct dentry *lfs_create_file (struct super_block *sb,
 	inode = lfs_make_inode(sb, S_IFREG | 0644);
 	if (! inode)
 		goto out_dput;
-	inode->i_fop = &lfs_file_ops;
-	inode->i_private = counter;
+
+	if (thread_file)
+		inode->i_fop = &lfs_thread_file_ops;
+	else
+		inode->i_fop = &lfs_file_ops;
+
+	inode->i_private = &counter;
+
 /*
  * Put it all into the dentry cache and we're done.
  */
@@ -211,27 +278,48 @@ static struct dentry *lfs_create_dir (struct super_block *sb,
 }
 
 
+void project4fs_create_directory(struct super_block *sb,
+				 struct dentry *root, struct task_struct *task)
+{
+	struct list_head *list;
+	struct task_struct *child;
+	struct task_struct *thrd = task;
+	struct dentry *mydir;
+	char buffer[30];
 
-/*
- * OK, create the files that we export.
- */
-static atomic_t counter, subcounter;
+	if (!task)
+		return;
+
+	printk(KERN_INFO "Running for gid %d pid %d\n", task->tgid, task->pid);
+	snprintf(buffer, 20, "%d",task->tgid);
+
+	mydir = lfs_create_dir(sb, root, buffer);
+
+
+	if (!mydir) {
+		printk(KERN_ERR
+			"failed to create directory for %s\n", buffer);
+		return;
+	}
+
+	lfs_create_file(sb, mydir, "signal", 0);
+
+	do {
+		snprintf(buffer, 20, "%d.status",thrd->pid);
+		lfs_create_file(sb, mydir, buffer, 1);
+	} while_each_thread(task,  thrd);
+
+	list_for_each(list, &task->children) {
+
+		child = list_entry(list, struct task_struct, sibling);
+
+		project4fs_create_directory(sb, mydir, child);
+	}
+}
 
 static void lfs_create_files (struct super_block *sb, struct dentry *root)
 {
-	struct dentry *subdir;
-/*
- * One counter in the top-level directory.
- */
-	atomic_set(&counter, 0);
-	lfs_create_file(sb, root, "counter", &counter);
-/*
- * And one in a subdirectory.
- */
-	atomic_set(&subcounter, 0);
-	subdir = lfs_create_dir(sb, root, "subdir");
-	if (subdir)
-		lfs_create_file(sb, subdir, "subcounter", &subcounter);
+	project4fs_create_directory(sb, root, &init_task);
 }
 
 
@@ -306,13 +394,10 @@ static struct dentry *lfs_get_super(struct file_system_type *fst,
 
 static struct file_system_type lfs_type = {
 	.owner 		= THIS_MODULE,
-	.name		= "lwnfs",
+	.name		= "project4",
 	.mount		= lfs_get_super,
 	.kill_sb	= kill_litter_super,
 };
-
-
-
 
 /*
  * Get things set up.
