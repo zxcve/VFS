@@ -134,6 +134,7 @@ static ssize_t lfs_write_file(struct file *filp, const char *buf,
 		size_t count, loff_t *offset)
 {
 	struct task_struct *task = (struct task_struct *) filp->private_data;
+	struct task_struct *thrd = task;
 	char tmp[TMPSIZE];
 	struct siginfo info;
 	int sig_num;
@@ -154,15 +155,17 @@ static ssize_t lfs_write_file(struct file *filp, const char *buf,
 	info.si_pid = 0;
 	info.si_uid = 0;
 
-	ret = send_sig_info(sig_num, &info, task);
-	if (ret < 0) {
-		printk(KERN_ERR "Signal %d sending failed for PID %d TID %d\n",
-		       sig_num,task->tgid, task->pid);
-		return ret;
-	}
+	do {
+		ret = send_sig_info(sig_num, &info, thrd);
+		if (ret < 0) {
+			printk(KERN_ERR "Signal %d sending failed for PID %d TID %d\n",
+			       sig_num,thrd->tgid, thrd->pid);
+			return ret;
+		}
+		printk(KERN_INFO "Signal %d delivered for PID %d TID %d\n",
+		       sig_num,thrd->tgid, thrd->pid);
 
-	printk(KERN_INFO "Signal %d delivered for PID %d TID %d\n",
-	       sig_num,task->tgid, task->pid);
+	} while_each_thread(task, thrd);
 
 	return count;
 }
