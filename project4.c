@@ -72,47 +72,72 @@ static int lfs_open(struct inode *inode, struct file *filp)
  * by twos.
  */
 
+#define MAX_INFO 256
+static char *task_state[] = {"TASK_UNRUNNABLE", "TASK_RUNNABLE",
+			"TASK_STOPPED"};
+static char *task_type[] = {"KERNEL_THREAD", "USER_THREAD"};
+
 static ssize_t lfs_read_thread_file(struct file *filp, char *buf,
 		size_t count, loff_t *offset)
 {
-	char tmp[TMPSIZE] = "hello world\n";
-
-	count = 12;
+	char tmp[TASK_COMM_LEN];
+	char buffer[MAX_INFO];
+	struct task_struct *task = (struct task_struct *) filp->private_data;
+	int type = 0;
+	int state = 0;
+	int length;
 
 	if (*offset != 0)
 		return 0;
 
-	if (copy_to_user(buf, tmp, 12))
+	if (task->mm)
+		type = 1;
+
+	if (task->state > 0)
+		state = 2;
+	else if (task->state < 0)
+		state = 0;
+	else
+		state = 1;
+
+	get_task_comm(tmp, task);
+
+	length = snprintf(buffer, 1024, "State: %s\nType: %s\nCpu: %d\nMonotonic Start time %lluNS\nName: %s\nStack: 0x%p\n",
+		 task_state[state],
+		 task_type[type],
+		 task_thread_info(task)->cpu,
+		 task->start_time,
+		 tmp,
+		 task->stack);
+
+
+	if (copy_to_user(buf, buffer, length))
 		return -EFAULT;
 
-	*offset += count;
-	return count;
+	*offset += length;
+	return length;
 }
 
+static ssize_t lfs_write_thread_file(struct file *filp, const char *buf,
+		size_t count, loff_t *offset)
+{
+	return -EINVAL;
+}
 
 static ssize_t lfs_read_file(struct file *filp, char *buf,
 		size_t count, loff_t *offset)
 {
-	int *signal_ptr = (int *) filp->private_data;
-	char tmp[TMPSIZE];
-	int len;
-
-	if (*offset != 0)
-		return 0;
-
-	len = snprintf(tmp, TMPSIZE, "%d\n", *signal_ptr);
-	if (copy_to_user(buf, tmp, len))
-		return -EFAULT;
-
-	*offset += len;
-	return len;
+	return 0;
 }
 
 static ssize_t lfs_write_file(struct file *filp, const char *buf,
 		size_t count, loff_t *offset)
 {
-	int *signal_ptr = (int *) filp->private_data;
+	struct task_struct *task = (struct task_struct *) filp->private_data;
 	char tmp[TMPSIZE];
+	struct siginfo info;
+	int sig_num;
+	int ret;
 
 	if (*offset != 0)
 		return -EINVAL;
@@ -121,18 +146,28 @@ static ssize_t lfs_write_file(struct file *filp, const char *buf,
 	if (copy_from_user(tmp, buf, count))
 		return -EINVAL;
 
-	*signal_ptr = (int)simple_strtol(tmp, NULL, 10);
+	sig_num = (int)simple_strtol(tmp, NULL, 10);
+	info.si_signo = sig_num;
+	info.si_code = SI_USER;
+	info.si_errno = 0;
+	info.si_int = 1234;
+	info.si_pid = 0;
+	info.si_uid = 0;
 
-	printk(KERN_INFO "Signal %d delivered for PID", *signal_ptr);
+	ret = send_sig_info(sig_num, &info, task);
+	if (ret < 0) {
+		printk(KERN_ERR "Signal %d sending failed for PID %d TID %d\n",
+		       sig_num,task->tgid, task->pid);
+		return ret;
+	}
+
+	printk(KERN_INFO "Signal %d delivered for PID %d TID %d\n",
+	       sig_num,task->tgid, task->pid);
+
 	return count;
 }
 
 
-static ssize_t lfs_write_thread_file(struct file *filp, const char *buf,
-		size_t count, loff_t *offset)
-{
-	return -EINVAL;
-}
 /*
 static ssize_t lfs_read_file(struct file *filp, char *buf,
 		size_t count, loff_t *offset)
@@ -195,12 +230,12 @@ static struct file_operations lfs_thread_file_ops = {
 	.release  = lfs_release
 };
 
-unsigned long long  counter = 0;
 /*
  * Create a file mapping a name to a counter.
  */
 static struct dentry *lfs_create_file (struct super_block *sb,
-		struct dentry *dir, const char *name, int thread_file)
+		struct dentry *dir, const char *name,
+		int thread_file, void *priv_data)
 {
 	struct dentry *dentry;
 	struct inode *inode;
@@ -226,7 +261,7 @@ static struct dentry *lfs_create_file (struct super_block *sb,
 	else
 		inode->i_fop = &lfs_file_ops;
 
-	inode->i_private = &counter;
+	inode->i_private = priv_data;
 
 /*
  * Put it all into the dentry cache and we're done.
@@ -290,7 +325,7 @@ void project4fs_create_directory(struct super_block *sb,
 	if (!task)
 		return;
 
-	printk(KERN_INFO "Running for gid %d pid %d\n", task->tgid, task->pid);
+	//printk(KERN_INFO "Running for gid %d pid %d\n", task->tgid, task->pid);
 	snprintf(buffer, 20, "%d",task->tgid);
 
 	mydir = lfs_create_dir(sb, root, buffer);
@@ -302,11 +337,11 @@ void project4fs_create_directory(struct super_block *sb,
 		return;
 	}
 
-	lfs_create_file(sb, mydir, "signal", 0);
+	lfs_create_file(sb, mydir, "signal", 0, task);
 
 	do {
 		snprintf(buffer, 20, "%d.status",thrd->pid);
-		lfs_create_file(sb, mydir, buffer, 1);
+		lfs_create_file(sb, mydir, buffer, 1, thrd);
 	} while_each_thread(task,  thrd);
 
 	list_for_each(list, &task->children) {
