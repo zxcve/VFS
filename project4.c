@@ -134,7 +134,6 @@ static ssize_t lfs_write_file(struct file *filp, const char *buf,
 		size_t count, loff_t *offset)
 {
 	struct task_struct *task = (struct task_struct *) filp->private_data;
-	struct task_struct *thrd = task;
 	char tmp[TMPSIZE];
 	struct siginfo info;
 	int sig_num;
@@ -155,17 +154,14 @@ static ssize_t lfs_write_file(struct file *filp, const char *buf,
 	info.si_pid = 0;
 	info.si_uid = 0;
 
-	do {
-		ret = send_sig_info(sig_num, &info, thrd);
-		if (ret < 0) {
-			printk(KERN_ERR "Signal %d sending failed for PID %d TID %d\n",
-			       sig_num,thrd->tgid, thrd->pid);
-			return ret;
-		}
-		printk(KERN_INFO "Signal %d delivered for PID %d TID %d\n",
-		       sig_num,thrd->tgid, thrd->pid);
-
-	} while_each_thread(task, thrd);
+	ret = send_sig_info(sig_num, &info, task);
+	if (ret < 0) {
+		printk(KERN_ERR "Signal %d sending failed for PID %d TID %d\n",
+		       sig_num,task->tgid, task->pid);
+		return ret;
+	}
+	printk(KERN_INFO "Signal %d delivered for PID %d TID %d\n",
+	       sig_num,task->tgid, task->pid);
 
 	return count;
 }
@@ -317,7 +313,8 @@ static struct dentry *lfs_create_dir (struct super_block *sb,
 
 
 void project4fs_create_directory(struct super_block *sb,
-				 struct dentry *root, struct task_struct *task)
+				 struct dentry *root, struct task_struct *task,
+				 int process_threads)
 {
 	struct list_head *list;
 	struct task_struct *child;
@@ -329,10 +326,9 @@ void project4fs_create_directory(struct super_block *sb,
 		return;
 
 	//printk(KERN_INFO "Running for gid %d pid %d\n", task->tgid, task->pid);
-	snprintf(buffer, 20, "%d",task->tgid);
+	snprintf(buffer, 20, "%d",task->pid);
 
 	mydir = lfs_create_dir(sb, root, buffer);
-
 
 	if (!mydir) {
 		printk(KERN_ERR
@@ -341,23 +337,26 @@ void project4fs_create_directory(struct super_block *sb,
 	}
 
 	lfs_create_file(sb, mydir, "signal", 0, task);
+	snprintf(buffer, 20, "%d.status",task->pid);
+	lfs_create_file(sb, mydir, buffer, 1, task);
 
-	do {
-		snprintf(buffer, 20, "%d.status",thrd->pid);
-		lfs_create_file(sb, mydir, buffer, 1, thrd);
-	} while_each_thread(task,  thrd);
+	if (process_threads) {
+		while_each_thread(task, thrd) {
+			project4fs_create_directory(sb, root, thrd, 0);
+		};
+	}
 
 	list_for_each(list, &task->children) {
 
 		child = list_entry(list, struct task_struct, sibling);
 
-		project4fs_create_directory(sb, mydir, child);
+		project4fs_create_directory(sb, mydir, child, 1);
 	}
 }
 
 static void lfs_create_files (struct super_block *sb, struct dentry *root)
 {
-	project4fs_create_directory(sb, root, &init_task);
+	project4fs_create_directory(sb, root, &init_task, 1);
 }
 
 
