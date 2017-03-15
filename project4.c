@@ -97,23 +97,39 @@ static ssize_t project4_read_status_file(struct file *filp,
 					 char __user *buf,
 					 size_t count, loff_t *offset)
 {
+	/* NOTE: The below function may behave unappropriately if the process
+	 * has been killed, followed by the task struct getting deallocated and
+	 * reallocated for different task but same pid. :) Difficult scenario to
+	 * create. This is my implementation limitations. The only other way was
+	 * to copy entire data in mount time. I did not proceed that way due to
+	 * inefficiency in implementation.
+	 */
 	char tmp[TASK_COMM_LEN];
 	char buffer[MAX_INFO];
 	struct task_struct *task;
 	int type = 0;
 	int state = 0;
 	int length;
+	pid_t my_pid;
 
 	if (!buf || !filp || !offset) {
 		printk(KERN_ERR "Invalid Args for read status\n");
 		return -EINVAL;
 	}
 
+
+	my_pid = (pid_t)simple_strtol(filp->f_path.dentry->d_iname, NULL, 10);
+
 	task = (struct task_struct *) filp->private_data;
 
 	/* Null pointer for task struct */
 	if (!task) {
 		printk(KERN_ERR "Invalid Task struct found\n");
+		return -EINVAL;
+	}
+
+	if (my_pid != task->pid) {
+		printk("Task struct has been allocated to new pid. Remount the filesystem\n");
 		return -EINVAL;
 	}
 
