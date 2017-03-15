@@ -1,13 +1,18 @@
-/*
- * Demonstrate a trivial filesystem using libfs.
+/* Project4.c
  *
- * Copyright 2002, 2003 Jonathan Corbet <corbet@lwn.net>
- * This file may be redistributed under the terms of the GNU GPL.
+ * Virtual File System for Project 4
  *
- * Chances are that this code will crash your system, delete your
- * nethack high scores, and set your disk drives on fire.  You have
- * been warned.
+ * This software is licensed under the terms of the GNU General Public
+ * License version 2, as published by the Free Software Foundation, and
+ * may be copied, distributed, and modified under those terms.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  */
+
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -15,70 +20,45 @@
 #include <linux/pagemap.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
-#include <asm/uaccess.h>	/* copy_to_user */
+#include <asm/uaccess.h>
 #include <asm/atomic.h>
 
-/*
- * Boilerplate stuff.
- */
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Abhishek Chauhan");
+#define PROJECT4_MAGIC 0xDEADBEEF
+#define TMPSIZE 20
+#define MAX_INFO 256
 
-#define LFS_MAGIC 0x19980122
+enum project4_entry_type {
+	DIRECTORY,
+	SIGNAL_FILE,
+	STATUS_FILE
+};
 
+static char *task_state[] = {"TASK_UNRUNNABLE", "TASK_RUNNABLE",
+				"TASK_STOPPED"};
 
-/*
- * Anytime we make a file or directory in our filesystem we need to
- * come up with an inode to represent it internally.  This is
- * the function that does that job.  All that's really interesting
- * is the "mode" parameter, which says whether this is a directory
- * or file, and gives the permissions.
- */
-static struct inode *lfs_make_inode(struct super_block *sb, int mode)
+static char *task_type[] = {"KERNEL_THREAD", "USER_THREAD"};
+
+static struct inode *project4_make_inode(struct super_block *sb, int mode)
 {
 	struct inode *ret = new_inode(sb);
 
 	if (ret) {
 		ret->i_ino = get_next_ino();
 		ret->i_mode = mode;
-	//	ret->i_uid = 0;
-	//	ret->i_gid = 0;
 		ret->i_blocks = 0;
 		ret->i_atime = ret->i_mtime = ret->i_ctime = CURRENT_TIME;
 	}
 	return ret;
 }
 
-
-/*
- * The operations on our "files".
- */
-
-/*
- * Open a file.  All we have to do here is to copy over a
- * copy of the counter pointer so it's easier to get at.
- */
-static int lfs_open(struct inode *inode, struct file *filp)
+static int project4_open(struct inode *inode, struct file *filp)
 {
 	filp->private_data = inode->i_private;
 	return 0;
 }
 
-#define TMPSIZE 20
-/*
- * Read a file.  Here we increment and read the counter, then pass it
- * back to the caller.  The increment only happens if the read is done
- * at the beginning of the file (offset = 0); otherwise we end up counting
- * by twos.
- */
-
-#define MAX_INFO 256
-static char *task_state[] = {"TASK_UNRUNNABLE", "TASK_RUNNABLE",
-			"TASK_STOPPED"};
-static char *task_type[] = {"KERNEL_THREAD", "USER_THREAD"};
-
-static ssize_t lfs_read_thread_file(struct file *filp, char *buf,
-		size_t count, loff_t *offset)
+static ssize_t project4_read_thread_file(struct file *filp, char *buf,
+					 size_t count, loff_t *offset)
 {
 	char tmp[TASK_COMM_LEN];
 	char buffer[MAX_INFO];
@@ -103,12 +83,12 @@ static ssize_t lfs_read_thread_file(struct file *filp, char *buf,
 	get_task_comm(tmp, task);
 
 	length = snprintf(buffer, 1024, "State: %s\nType: %s\nCpu: %d\nMonotonic Start time %lluNS\nName: %s\nStack: 0x%p\n",
-		 task_state[state],
-		 task_type[type],
-		 task_thread_info(task)->cpu,
-		 task->start_time,
-		 tmp,
-		 task->stack);
+			  task_state[state],
+			  task_type[type],
+			  task_thread_info(task)->cpu,
+			  task->start_time,
+			  tmp,
+			  task->stack);
 
 
 	if (copy_to_user(buf, buffer, length))
@@ -118,20 +98,42 @@ static ssize_t lfs_read_thread_file(struct file *filp, char *buf,
 	return length;
 }
 
-static ssize_t lfs_write_thread_file(struct file *filp, const char *buf,
-		size_t count, loff_t *offset)
+/**
+ * @brief Called for write of Status file
+ *
+ * @param filp NOT USED
+ * @param buf NOT USED
+ * @param count NOT USED
+ * @param offset NOT USED
+ *
+ * @return  Always -EINVAL
+ */
+static ssize_t project4_write_thread_file(struct file *filp, const char *buf,
+					  size_t count, loff_t *offset)
 {
+	/* Writing Status File is not supported */
 	return -EINVAL;
 }
 
-static ssize_t lfs_read_file(struct file *filp, char *buf,
-		size_t count, loff_t *offset)
+/**
+ * @brief Called for read of Signal file
+ *
+ * @param filp NOT USED
+ * @param buf NOT USED
+ * @param count NOT USED
+ * @param offset NOT USED
+ *
+ * @return  Always -EINVAL
+ */
+static ssize_t project4_read_file(struct file *filp, char *buf,
+				  size_t count, loff_t *offset)
 {
-	return 0;
+	/* Reading Signal File is not supported */
+	return -EINVAL;
 }
 
-static ssize_t lfs_write_file(struct file *filp, const char *buf,
-		size_t count, loff_t *offset)
+static ssize_t project4_write_file(struct file *filp, const char *buf,
+				   size_t count, loff_t *offset)
 {
 	struct task_struct *task = (struct task_struct *) filp->private_data;
 	char tmp[TMPSIZE];
@@ -166,289 +168,309 @@ static ssize_t lfs_write_file(struct file *filp, const char *buf,
 	return count;
 }
 
-
-/*
-static ssize_t lfs_read_file(struct file *filp, char *buf,
-		size_t count, loff_t *offset)
+/**
+ * @brief Called during release of file
+ *
+ * @param inode Inode for the File
+ * @param filep File Pointer for the File
+ *
+ * @return 0 Always
+ */
+int project4_release (struct inode *inode, struct file *filep)
 {
-	atomic_t *counter = (atomic_t *) filp->private_data;
-	int v, len;
-	char tmp[TMPSIZE];
-	v = atomic_read(counter);
-	if (*offset > 0)
-		v -= 1; 
-	else
-		atomic_inc(counter);
-	len = snprintf(tmp, TMPSIZE, "%d\n", v);
-	if (*offset > len)
-		return 0;
-	if (count > len - *offset)
-		count = len - *offset;
-	if (copy_to_user(buf, tmp + *offset, count))
-		return -EFAULT;
-	*offset += count;
-	return count;
-}
-
-static ssize_t lfs_write_file(struct file *filp, const char *buf,
-		size_t count, loff_t *offset)
-{
-	atomic_t *counter = (atomic_t *) filp->private_data;
-	char tmp[TMPSIZE];
-	if (*offset != 0)
-		return -EINVAL;
-	if (count >= TMPSIZE)
-		return -EINVAL;
-	memset(tmp, 0, TMPSIZE);
-	if (copy_from_user(tmp, buf, count))
-		return -EFAULT;
-	atomic_set(counter, simple_strtol(tmp, NULL, 10));
-	return count;
-}
-*/
-int lfs_release (struct inode *inode, struct file *filep)
-{
-	//kfree(inode->i_private);
 	return 0;
 }
 
-/*
- * Now we can put together our file operations structure.
+/**
+ * @brief FIle operations for the Signal files
  */
-static struct file_operations lfs_file_ops = {
-	.open	= lfs_open,
-	.read	= lfs_read_file,
-	.write  = lfs_write_file,
-	.release  = lfs_release
+static struct file_operations project4_file_ops = {
+	.open	= project4_open,
+	.read	= project4_read_file,
+	.write  = project4_write_file,
+	.release  = project4_release
 };
 
-static struct file_operations lfs_thread_file_ops = {
-	.open	= lfs_open,
-	.read	= lfs_read_thread_file,
-	.write  = lfs_write_thread_file,
-	.release  = lfs_release
+/**
+ * @brief File Operations for the Status files
+ */
+static struct file_operations project4_thread_file_ops = {
+	.open	= project4_open,
+	.read	= project4_read_thread_file,
+	.write  = project4_write_thread_file,
+	.release  = project4_release
 };
 
-/*
- * Create a file mapping a name to a counter.
+/**
+ * @brief Creates a file/dir entry in filesystem
+ *
+ * @param sb Super-Block for the filesystem
+ * @param parent Parent Directory
+ * @param name Name of the entry
+ * @param type Type of the entry
+ * @param priv_data Priv-Data associated with entry
+ *
+ * @return NULL if failed, otherwise dentry pointer
  */
-static struct dentry *lfs_create_file (struct super_block *sb,
-		struct dentry *dir, const char *name,
-		int thread_file, void *priv_data)
+static struct dentry *project4_create_entry(struct super_block *sb,
+					    struct dentry *parent,
+					    const char *name,
+					    enum project4_entry_type type,
+					    void *priv_data)
 {
 	struct dentry *dentry;
 	struct inode *inode;
 	struct qstr qname;
-/*
- * Make a hashed version of the name to go with the dentry.
- */
+	int mode;
+
+	/* Quick String for dentry */
 	qname.name = name;
 	qname.len = strlen (name);
 	qname.hash = full_name_hash(name, qname.len);
-/*
- * Now we can create our dentry and the inode to go with it.
- */
-	dentry = d_alloc(dir, &qname);
-	if (! dentry)
-		goto out;
-	inode = lfs_make_inode(sb, S_IFREG | 0644);
-	if (! inode)
-		goto out_dput;
 
-	if (thread_file)
-		inode->i_fop = &lfs_thread_file_ops;
-	else
-		inode->i_fop = &lfs_file_ops;
-
-	inode->i_private = priv_data;
-
-/*
- * Put it all into the dentry cache and we're done.
- */
-	d_add(dentry, inode);
-	return dentry;
-/*
- * Then again, maybe it didn't work.
- */
-  out_dput:
-	dput(dentry);
-  out:
-	return 0;
-}
-
-
-/*
- * Create a directory which can be used to hold files.  This code is
- * almost identical to the "create file" logic, except that we create
- * the inode with a different mode, and use the libfs "simple" operations.
- */
-static struct dentry *lfs_create_dir (struct super_block *sb,
-		struct dentry *parent, const char *name)
-{
-	struct dentry *dentry;
-	struct inode *inode;
-	struct qstr qname;
-
-	qname.name = name;
-	qname.len = strlen (name);
-	qname.hash = full_name_hash(name, qname.len);
+	/* Allocated an dentry */
 	dentry = d_alloc(parent, &qname);
-	if (! dentry)
-		goto out;
+	if (!dentry) {
+		printk(KERN_ERR "dentry allocation failed\n");
+		return NULL;
+	}
 
-	inode = lfs_make_inode(sb, S_IFDIR | 0644);
-	if (! inode)
-		goto out_dput;
-	inode->i_op = &simple_dir_inode_operations;
-	inode->i_fop = &simple_dir_operations;
+	/* Set the modes for inode */
+	switch (type) {
+		case DIRECTORY:
+			mode = S_IFDIR | 0644;
+			break;
+		case SIGNAL_FILE:
+		case STATUS_FILE:
+			mode = S_IFREG | 0644;
+			break;
+		default:
+			printk(KERN_ERR "Unknown entry requested to create\n");
+			return NULL;
+	}
 
+	/* Allocate inode for the entry */
+	inode = project4_make_inode(sb, mode);
+	if (!inode) {
+		printk(KERN_ERR "inode allocation failed\n");
+		dput(dentry);
+		return NULL;
+	}
+
+	/* Registers file operations/inode operations */
+	switch (type) {
+		case DIRECTORY:
+			inode->i_op = &simple_dir_inode_operations;
+			inode->i_fop = &simple_dir_operations;
+			break;
+		case SIGNAL_FILE:
+			inode->i_fop = &project4_file_ops;
+			inode->i_private = priv_data;
+			break;
+		case STATUS_FILE:
+			inode->i_fop = &project4_thread_file_ops;
+			inode->i_private = priv_data;
+			break;
+	}
+
+	/* Add dentry to hash queue*/
 	d_add(dentry, inode);
-	return dentry;
 
-  out_dput:
-	dput(dentry);
-  out:
-	return 0;
+	return dentry;
 }
 
-
-void project4fs_create_directory(struct super_block *sb,
+/**
+ * @brief Recursively create entire process/thread hierarchy
+ *
+ * @param sb Super-Block for the fs
+ * @param root Root dentry for the fs
+ * @param task Task Structure Pointer for root process
+ * @param create_threads 1 for creating sibling thread dirs, 0 for not
+ *
+ * @return 0 for success, -ENOMEM on failure
+ */
+int project4fs_create_hierarchy(struct super_block *sb,
 				 struct dentry *root, struct task_struct *task,
-				 int process_threads)
+				 int create_threads)
 {
 	struct list_head *list;
 	struct task_struct *child;
 	struct task_struct *thrd = task;
 	struct dentry *mydir;
+	struct dentry *myfile;
 	char buffer[30];
+	int ret;
 
+	/* Base case for the recursive function */
 	if (!task)
-		return;
+		return 0;
 
-	//printk(KERN_INFO "Running for gid %d pid %d\n", task->tgid, task->pid);
+	/* Create String from pid */
 	snprintf(buffer, 20, "%d",task->pid);
 
-	mydir = lfs_create_dir(sb, root, buffer);
+	/* Create directory with pid */
+	mydir = project4_create_entry(sb, root, buffer, DIRECTORY, NULL);
 
 	if (!mydir) {
 		printk(KERN_ERR
-			"failed to create directory for %s\n", buffer);
-		return;
+		       "failed to create directory for %s\n", buffer);
+		return -ENOMEM;
 	}
 
-	lfs_create_file(sb, mydir, "signal", 0, task);
-	snprintf(buffer, 20, "%d.status",task->pid);
-	lfs_create_file(sb, mydir, buffer, 1, task);
+	/* Create Signal file inside the pid directory */
+	myfile =project4_create_entry(sb, mydir, "signal", SIGNAL_FILE, task);
+	if (!myfile) {
+		printk(KERN_ERR
+		       "failed to create signal file \n");
+		return -ENOMEM;
+	}
 
-	if (process_threads) {
+	/* Create String from status file */
+	snprintf(buffer, 20, "%d.status",task->pid);
+
+	/* Create Status file inside the pid directory */
+	myfile = project4_create_entry(sb, mydir, buffer, STATUS_FILE, task);
+	if (!myfile) {
+		printk(KERN_ERR
+		       "failed to create status file  %s\n", buffer);
+		return -ENOMEM;
+	}
+
+	/* Only the first process will create the directory for all threads in
+	 * the thread group. This is requried to avoid multiple calls to same
+	 * thread as the thread-group list is double link list without any start
+	 * and end
+	 */
+	if (create_threads) {
 		while_each_thread(task, thrd) {
-			project4fs_create_directory(sb, root, thrd, 0);
+			/* Create at same hierarchy */
+			ret = project4fs_create_hierarchy(sb, root, thrd, 0);
+			if (ret)
+				return ret;
 		};
 	}
 
+	/* Iterate across all the child. The children list does not contain the list
+	 * of all threads for a given parent. Hence, we need to iterate for all
+	 * threads using threadgroup list in above while loop.
+	 */
 	list_for_each(list, &task->children) {
 
 		child = list_entry(list, struct task_struct, sibling);
 
-		project4fs_create_directory(sb, mydir, child, 1);
+		/* Create at one lower hierarchy */
+		ret = project4fs_create_hierarchy(sb, mydir, child, 1);
+		if (ret)
+			return ret;
 	}
+	return 0;
 }
 
-static void lfs_create_files (struct super_block *sb, struct dentry *root)
-{
-	project4fs_create_directory(sb, root, &init_task, 1);
-}
-
-
-
-/*
- * Superblock stuff.  This is all boilerplate to give the vfs something
- * that looks like a filesystem to work with.
- */
-
-/*
- * Our superblock operations, both of which are generic kernel ops
- * that we don't have to write ourselves.
- */
-static struct super_operations lfs_s_ops = {
+/* Initializes minimal amount of APIs needed for sb operations */
+static struct super_operations project4_s_ops = {
 	.statfs		= simple_statfs,
 	.drop_inode	= generic_delete_inode,
+	.show_options	= generic_show_options,
 };
 
-/*
- * "Fill" a superblock with mundane stuff.
+/**
+ * @brief Initializes super block
+ *
+ * @param sb SuperBlock pointer
+ * @param data Not Used
+ * @param silent Not Used
+ *
+ * @return 0 for success, -ENOMEM on failure
  */
-static int lfs_fill_super (struct super_block *sb, void *data, int silent)
+static int project4_fill_super (struct super_block *sb, void *data, int silent)
 {
 	struct inode *root;
 	struct dentry *root_dentry;
-/*
- * Basic parameters.
- */
+
+	/* Initiliazes the super block */
 	sb->s_blocksize = PAGE_CACHE_SIZE;
 	sb->s_blocksize_bits = PAGE_CACHE_SHIFT;
-	sb->s_magic = LFS_MAGIC;
-	sb->s_op = &lfs_s_ops;
-/*
- * We need to conjure up an inode to represent the root directory
- * of this filesystem.  Its operations all come from libfs, so we
- * don't have to mess with actually *doing* things inside this
- * directory.
- */
-	root = lfs_make_inode (sb, S_IFDIR | 0755);
-	if (! root)
-		goto out;
+	sb->s_magic = PROJECT4_MAGIC;
+	sb->s_op = &project4_s_ops;
+	sb->s_time_gran		= 1;
+
+	/*
+	 * We need to conjure up an inode to represent the root directory
+	 * of this filesystem.  Its operations all come from libfs, so we
+	 * don't have to mess with actually *doing* things inside this
+	 * directory.
+	 */
+	root = project4_make_inode (sb, S_IFDIR | 0755);
+	if (!root) {
+		printk(KERN_ERR "inode allocation failed\n");
+		return -ENOMEM;
+	}
+	/* Register for inode operations, use libfs implementation */
 	root->i_op = &simple_dir_inode_operations;
+
+	/* Register for file operations, use libfs implementation */
 	root->i_fop = &simple_dir_operations;
-/*
- * Get a dentry to represent the directory in core.
- */
+
+	/* Get a dentry to represent the directory in core. */
 	root_dentry = d_make_root(root);
-	if (! root_dentry)
-		goto out_iput;
+	if (! root_dentry) {
+		/* Will try to free if usage count is 0 */
+		printk(KERN_ERR "dentry allocation for root failed\n");
+		iput(root);
+		return -ENOMEM;
+	}
+
+	/* Store pointer for root dentry in sb */
 	sb->s_root = root_dentry;
-/*
- * Make up the files which will be in this filesystem, and we're done.
- */
-	lfs_create_files (sb, root_dentry);
-	return 0;
-	
-  out_iput:
-	iput(root);
-  out:
-	return -ENOMEM;
+
+	/* Create the files we need. */
+	return project4fs_create_hierarchy(sb, root_dentry, &init_task, 1);
 }
 
-
-/*
- * Stuff to pass in when registering the filesystem.
+/**
+ * @brief Mounts the file system
+ *
+ * @return Return value of mount_nodev
  */
-static struct dentry *lfs_get_super(struct file_system_type *fst,
-		int flags, const char *devname, void *data)
+static struct dentry *project4_get_super(struct file_system_type *fst,
+					 int flags,
+					 const char *devname, void *data)
 {
-	return mount_nodev(fst, flags, data, lfs_fill_super);
+	return mount_nodev(fst, flags, data, project4_fill_super);
 }
 
-static struct file_system_type lfs_type = {
-	.owner 		= THIS_MODULE,
+/**
+ * @brief Handlers for this filesystem
+ */
+static struct file_system_type project4_type = {
+	.owner		= THIS_MODULE,
 	.name		= "project4",
-	.mount		= lfs_get_super,
+	.mount		= project4_get_super,
 	.kill_sb	= kill_litter_super,
 };
 
-/*
- * Get things set up.
+/**
+ * @brief Called during module init
+ *
+ * @return None
  */
-static int __init lfs_init(void)
+static int __init project4_init(void)
 {
-	return register_filesystem(&lfs_type);
+	return register_filesystem(&project4_type);
 }
 
-static void __exit lfs_exit(void)
+/**
+ * @brief Called during module unloading
+ *
+ * @return None
+ */
+static void __exit project4_exit(void)
 {
-	unregister_filesystem(&lfs_type);
+	unregister_filesystem(&project4_type);
 }
 
-module_init(lfs_init);
-module_exit(lfs_exit);
+module_init(project4_init);
+module_exit(project4_exit);
 
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Abhishek Chauhan");
