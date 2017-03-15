@@ -27,18 +27,36 @@
 #define TMPSIZE 20
 #define MAX_INFO 256
 
+/* Types of entry supported */
 enum project4_entry_type {
-	DIRECTORY,
+	DIRECTORY = 0x0,
 	SIGNAL_FILE,
 	STATUS_FILE
 };
 
+/* Types of states supported */
 static char *task_state[] = {"TASK_UNRUNNABLE", "TASK_RUNNABLE",
 				"TASK_STOPPED"};
 
+/* Types of tasks supported */
 static char *task_type[] = {"KERNEL_THREAD", "USER_THREAD"};
 
-static struct inode *project4_make_inode(struct super_block *sb, int mode)
+/* Array of string to print signal name */
+static char *signal_array[] = {"SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","SIGIOT",
+	"SIGBUS","SIGFPE","SIGKILL","SIGUSR1","SIGSEGV","SIGUSR2","SIGPIPE","SIGALRM",
+	"SIGTERM","SIGSTKFLT","SIGCHLD","SIGCONT","SIGSTOP","SIGTSTP","SIGTTIN",
+	"SIGTTOU","SIGURG","SIGXCPU","SIGXFSZ","SIGVTALRM","SIGPROF","SIGWINCH",
+	"SIGIO","SIGPWR"};
+
+/**
+ * @brief Allocates the inode with given mode
+ *
+ * @param sb Super-Block for the FS
+ * @param mode Mode for the inode
+ *
+ * @return Pointer to inode on success, NULL otherwise
+ */
+static struct inode *project4_allocate_inode(struct super_block *sb, int mode)
 {
 	struct inode *ret = new_inode(sb);
 
@@ -51,28 +69,59 @@ static struct inode *project4_make_inode(struct super_block *sb, int mode)
 	return ret;
 }
 
-static int project4_open(struct inode *inode, struct file *filp)
+/**
+ * @brief Called when file is opened. Attaches the private data from inode.
+ *
+ * @param inode Inode Pointer for the file
+ * @param filp File Pointer for the file
+ *
+ * @return 0 Always
+ */
+static int project4_open_file(struct inode *inode, struct file *filp)
 {
 	filp->private_data = inode->i_private;
 	return 0;
 }
 
-static ssize_t project4_read_thread_file(struct file *filp, char *buf,
+/**
+ * @brief Reads the status of task with pid same as file name
+ *
+ * @param filp File Pointer
+ * @param buf User-space buffer
+ * @param count Size of the buffer
+ * @param offset Offset to read
+ *
+ * @return Number of bytes read
+ */
+static ssize_t project4_read_status_file(struct file *filp,
+					 char __user *buf,
 					 size_t count, loff_t *offset)
 {
 	char tmp[TASK_COMM_LEN];
 	char buffer[MAX_INFO];
-	struct task_struct *task = (struct task_struct *) filp->private_data;
+	struct task_struct *task;
 	int type = 0;
 	int state = 0;
 	int length;
 
-	if (*offset != 0)
-		return 0;
+	if (!buf || !filp || !offset) {
+		printk(KERN_ERR "Invalid Args for read status\n");
+		return -EINVAL;
+	}
 
+	task = (struct task_struct *) filp->private_data;
+
+	/* Null pointer for task struct */
+	if (!task) {
+		printk(KERN_ERR "Invalid Task struct found\n");
+		return -EINVAL;
+	}
+
+	/* If mm is initialized then, it is user thread */
 	if (task->mm)
 		type = 1;
 
+	/* State for the process */
 	if (task->state > 0)
 		state = 2;
 	else if (task->state < 0)
@@ -80,8 +129,10 @@ static ssize_t project4_read_thread_file(struct file *filp, char *buf,
 	else
 		state = 1;
 
+	/* Get the name of the task */
 	get_task_comm(tmp, task);
 
+	/* Create the buffer to be copied in user space */
 	length = snprintf(buffer, 1024, "State: %s\nType: %s\nCpu: %d\nMonotonic Start time %lluNS\nName: %s\nStack: 0x%p\n",
 			  task_state[state],
 			  task_type[type],
@@ -90,12 +141,21 @@ static ssize_t project4_read_thread_file(struct file *filp, char *buf,
 			  tmp,
 			  task->stack);
 
+	/* For partial read support */
+	if (length < count + *offset) {
+		count = length - *offset;
+	}
 
-	if (copy_to_user(buf, buffer, length))
+	/* Perform copy to user */
+	if (copy_to_user(buf + *offset, buffer, count)) {
+		printk("copying user space buffer failed\n");
 		return -EFAULT;
+	}
 
-	*offset += length;
-	return length;
+	/* Update the offset */
+	*offset += count;
+
+	return count;
 }
 
 /**
@@ -108,7 +168,7 @@ static ssize_t project4_read_thread_file(struct file *filp, char *buf,
  *
  * @return  Always -EINVAL
  */
-static ssize_t project4_write_thread_file(struct file *filp, const char *buf,
+static ssize_t project4_write_status_file(struct file *filp, const char *buf,
 					  size_t count, loff_t *offset)
 {
 	/* Writing Status File is not supported */
@@ -125,30 +185,67 @@ static ssize_t project4_write_thread_file(struct file *filp, const char *buf,
  *
  * @return  Always -EINVAL
  */
-static ssize_t project4_read_file(struct file *filp, char *buf,
+static ssize_t project4_read_signal_file(struct file *filp, char *buf,
 				  size_t count, loff_t *offset)
 {
 	/* Reading Signal File is not supported */
 	return -EINVAL;
 }
 
-static ssize_t project4_write_file(struct file *filp, const char *buf,
+/**
+ * @brief Delivers signal to the pid with file name
+ *
+ * @param filp File pointer for the file
+ * @param buf buffer pointer for the file
+ * @param count Count of bytes to be copied
+ * @param offset Offset where we need to write
+ *
+ * @return Number of bytes written
+ */
+static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 				   size_t count, loff_t *offset)
 {
-	struct task_struct *task = (struct task_struct *) filp->private_data;
+	struct task_struct *task;
 	char tmp[TMPSIZE];
 	struct siginfo info;
 	int sig_num;
 	int ret;
 
-	if (*offset != 0)
+	if (!buf || !filp || !offset) {
+		printk(KERN_ERR "Invalid Args for write signal\n");
 		return -EINVAL;
+	}
+
+	/* Partial write not supported as the requirement is very small */
+	if (*offset != 0) {
+		return -EINVAL;
+	}
+
+	task = (struct task_struct *) filp->private_data;
+
+	/* Null pointer for task struct */
+	if (!task) {
+		printk(KERN_ERR "Invalid Task struct found\n");
+		return -EINVAL;
+	}
 
 	memset(tmp, 0, TMPSIZE);
-	if (copy_from_user(tmp, buf, count))
-		return -EINVAL;
 
+	/* Copy the signal from user */
+	if (copy_from_user(tmp, buf, count)) {
+		printk("copying user space buffer failed\n");
+		return -EINVAL;
+	}
+
+	/* Extract the signal number */
 	sig_num = (int)simple_strtol(tmp, NULL, 10);
+
+	/*Error check for signal number range */
+	if (sig_num <= 0 || sig_num > 30) {
+		printk("Invalid signal number passed. Allowed range [1-30]\n");
+		return -EINVAL;
+	}
+
 	info.si_signo = sig_num;
 	info.si_code = SI_USER;
 	info.si_errno = 0;
@@ -156,14 +253,15 @@ static ssize_t project4_write_file(struct file *filp, const char *buf,
 	info.si_pid = 0;
 	info.si_uid = 0;
 
+	/* Send the signal to the desired process */
 	ret = send_sig_info(sig_num, &info, task);
 	if (ret < 0) {
-		printk(KERN_ERR "Signal %d sending failed for PID %d TID %d\n",
-		       sig_num,task->tgid, task->pid);
+		printk(KERN_ERR "Signal %s<%d> failed PID<%d> TID<%d>\n",
+			signal_array[sig_num-1],sig_num,task->tgid, task->pid);
 		return ret;
 	}
-	printk(KERN_INFO "Signal %d delivered for PID %d TID %d\n",
-	       sig_num,task->tgid, task->pid);
+	printk(KERN_INFO "Signal %s<%d> delivered PID<%d> TID<%d>\n",
+	       signal_array[sig_num-1],sig_num,task->tgid, task->pid);
 
 	return count;
 }
@@ -184,20 +282,20 @@ int project4_release (struct inode *inode, struct file *filep)
 /**
  * @brief FIle operations for the Signal files
  */
-static struct file_operations project4_file_ops = {
-	.open	= project4_open,
-	.read	= project4_read_file,
-	.write  = project4_write_file,
+static struct file_operations project4_signal_file_ops = {
+	.open	= project4_open_file,
+	.read	= project4_read_signal_file,
+	.write  = project4_write_signal_file,
 	.release  = project4_release
 };
 
 /**
  * @brief File Operations for the Status files
  */
-static struct file_operations project4_thread_file_ops = {
-	.open	= project4_open,
-	.read	= project4_read_thread_file,
-	.write  = project4_write_thread_file,
+static struct file_operations project4_status_file_ops = {
+	.open	= project4_open_file,
+	.read	= project4_read_status_file,
+	.write  = project4_write_status_file,
 	.release  = project4_release
 };
 
@@ -250,7 +348,7 @@ static struct dentry *project4_create_entry(struct super_block *sb,
 	}
 
 	/* Allocate inode for the entry */
-	inode = project4_make_inode(sb, mode);
+	inode = project4_allocate_inode(sb, mode);
 	if (!inode) {
 		printk(KERN_ERR "inode allocation failed\n");
 		dput(dentry);
@@ -264,11 +362,11 @@ static struct dentry *project4_create_entry(struct super_block *sb,
 			inode->i_fop = &simple_dir_operations;
 			break;
 		case SIGNAL_FILE:
-			inode->i_fop = &project4_file_ops;
+			inode->i_fop = &project4_signal_file_ops;
 			inode->i_private = priv_data;
 			break;
 		case STATUS_FILE:
-			inode->i_fop = &project4_thread_file_ops;
+			inode->i_fop = &project4_status_file_ops;
 			inode->i_private = priv_data;
 			break;
 	}
@@ -400,7 +498,7 @@ static int project4_fill_super (struct super_block *sb, void *data, int silent)
 	 * don't have to mess with actually *doing* things inside this
 	 * directory.
 	 */
-	root = project4_make_inode (sb, S_IFDIR | 0755);
+	root = project4_allocate_inode (sb, S_IFDIR | 0755);
 	if (!root) {
 		printk(KERN_ERR "inode allocation failed\n");
 		return -ENOMEM;
