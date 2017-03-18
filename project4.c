@@ -79,7 +79,7 @@ static struct inode *project4_allocate_inode(struct super_block *sb, int mode)
 {
 	struct inode *ret = new_inode(sb);
 
-	if (ret) {
+	if (likely(ret)) {
 		ret->i_ino = get_next_ino();
 		ret->i_mode = mode;
 		ret->i_blocks = 0;
@@ -137,7 +137,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 	unsigned long long start_time;
 	void *stack;
 
-	if (!buf || !filp || !offset) {
+	if (unlikely(!buf || !filp || !offset)) {
 		printk(KERN_ERR "Invalid Args for read status\n");
 		return -EINVAL;
 	}
@@ -148,7 +148,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 	task = (struct task_struct *) filp->private_data;
 
 	/* Null pointer for task struct */
-	if (!task) {
+	if (unlikely(!task)) {
 		printk(KERN_ERR "Invalid Task struct found\n");
 		return -EINVAL;
 	}
@@ -159,7 +159,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 	my_tgid = task->tgid;
 	task_unlock(task);
 
-	if (my_pid != arg_pid) {
+	if (unlikely(my_pid != arg_pid)) {
 		printk("Task struct has been allocated to new pid. Remount the filesystem\n");
 		return -EINVAL;
 	}
@@ -171,9 +171,11 @@ static ssize_t project4_read_status_file(struct file *filp,
 	/* Get the name of the task */
 	get_task_comm(tmp, task);
 
-	if (mm) {
+	/* By default more tasks is in user-space hence likely */
+	if (likely(mm)) {
 		type = 1;
 
+		/* Protect access of mm fields */
 		task_lock(task);
 
 		hiwater_vm = mm->total_vm > mm->hiwater_vm ?
@@ -190,7 +192,9 @@ static ssize_t project4_read_status_file(struct file *filp,
 		stack_vm = mm->stack_vm;
 
 		task_unlock(task);
-
+		/* Not sure if snprintf sleeps hence release the lock and used
+		 * copied buffers.
+		 */
 		length += snprintf(buffer + length, 1024, "Virtual_Memory_Size:\t%lu kB\n",
 				   (total_vm << (PAGE_SHIFT-10)));
 		length += snprintf(buffer + length, 1024, "Virtual_Memory_Peak:\t%lu kB\n",
@@ -205,10 +209,12 @@ static ssize_t project4_read_status_file(struct file *filp,
 				   (stack_vm << (PAGE_SHIFT-10)));
 	}
 
+	/* No statistics for likely and unlikely */
 	if (type == 1 && my_pid == my_tgid) {
 		type = 2;
 	}
 
+	/* Protect fields from task struct */
 	task_lock(task);
 
 	state = fls((task->state | task->exit_state) & TASK_REPORT);
@@ -221,6 +227,9 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	task_unlock(task);
 
+	/* Not sure if snprintf sleeps hence release the lock and used
+	 * copied buffers.
+	 */
 	length += snprintf(buffer + length, 1024, "State:\t%s\n",
 			  task_state_array[state]);
 
@@ -236,16 +245,16 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	length += snprintf(buffer + length, 1024, "#############################\n");
 
-	if (mm)
+	if (likely(mm))
 		mmput(mm);
 
 	/* For partial read support */
-	if (length < count + *offset) {
+	if (unlikely(length < count + *offset)) {
 		count = length - *offset;
 	}
 
 	/* Perform copy to user */
-	if (copy_to_user(buf + *offset, buffer, count)) {
+	if (unlikely(copy_to_user(buf + *offset, buffer, count))) {
 		printk("copying user space buffer failed\n");
 		return -EFAULT;
 	}
@@ -309,20 +318,20 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 	int sig_num;
 	int ret;
 
-	if (!buf || !filp || !offset) {
+	if (unlikely(!buf || !filp || !offset)) {
 		printk(KERN_ERR "Invalid Args for write signal\n");
 		return -EINVAL;
 	}
 
 	/* Partial write not supported as the requirement is very small */
-	if (*offset != 0) {
+	if (unlikely(*offset != 0)) {
 		return -EINVAL;
 	}
 
 	task = (struct task_struct *) filp->private_data;
 
 	/* Null pointer for task struct */
-	if (!task) {
+	if (unlikely(!task)) {
 		printk(KERN_ERR "Invalid Task struct found\n");
 		return -EINVAL;
 	}
@@ -330,7 +339,7 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 	memset(tmp, 0, TMPSIZE);
 
 	/* Copy the signal from user */
-	if (copy_from_user(tmp, buf, count)) {
+	if (unlikely(copy_from_user(tmp, buf, count))) {
 		printk("copying user space buffer failed\n");
 		return -EINVAL;
 	}
@@ -339,7 +348,7 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 	sig_num = (int)simple_strtol(tmp, NULL, 10);
 
 	/*Error check for signal number range */
-	if (sig_num <= 0 || sig_num > 30) {
+	if(unlikely(sig_num <= 0 || sig_num > 30)) {
 		printk("Invalid signal number passed. Allowed range [1-30]\n");
 		return -EINVAL;
 	}
@@ -352,7 +361,7 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 
 	/* Send the signal to the desired process */
 	ret = send_sig_info(sig_num, &info, task);
-	if (ret < 0) {
+	if (unlikely(ret < 0)) {
 		printk(KERN_ERR "Signal %s<%d> failed PID<%d> TID<%d>\n",
 			signal_array[sig_num-1],sig_num,task->tgid, task->pid);
 		return ret;
@@ -425,7 +434,7 @@ static struct dentry *project4_create_entry(struct super_block *sb,
 
 	/* Allocated an dentry */
 	dentry = d_alloc(parent, &qname);
-	if (!dentry) {
+	if (unlikely(!dentry)) {
 		printk(KERN_ERR "dentry allocation failed\n");
 		return NULL;
 	}
@@ -446,7 +455,7 @@ static struct dentry *project4_create_entry(struct super_block *sb,
 
 	/* Allocate inode for the entry */
 	inode = project4_allocate_inode(sb, mode);
-	if (!inode) {
+	if (unlikely(!inode)) {
 		printk(KERN_ERR "inode allocation failed\n");
 		dput(dentry);
 		return NULL;
@@ -497,7 +506,7 @@ int project4fs_create_hierarchy(struct super_block *sb,
 	int ret;
 
 	/* Base case for the recursive function */
-	if (!task)
+	if (unlikely(!task))
 		return 0;
 
 	/* Create String from pid */
@@ -506,7 +515,7 @@ int project4fs_create_hierarchy(struct super_block *sb,
 	/* Create directory with pid */
 	mydir = project4_create_entry(sb, root, buffer, DIRECTORY, NULL);
 
-	if (!mydir) {
+	if (unlikely(!mydir)) {
 		printk(KERN_ERR
 		       "failed to create directory for %s\n", buffer);
 		return -ENOMEM;
@@ -514,7 +523,7 @@ int project4fs_create_hierarchy(struct super_block *sb,
 
 	/* Create Signal file inside the pid directory */
 	myfile =project4_create_entry(sb, mydir, "signal", SIGNAL_FILE, task);
-	if (!myfile) {
+	if (unlikely(!myfile)) {
 		printk(KERN_ERR
 		       "failed to create signal file \n");
 		return -ENOMEM;
@@ -525,7 +534,7 @@ int project4fs_create_hierarchy(struct super_block *sb,
 
 	/* Create Status file inside the pid directory */
 	myfile = project4_create_entry(sb, mydir, buffer, STATUS_FILE, task);
-	if (!myfile) {
+	if (unlikely(!myfile)) {
 		printk(KERN_ERR
 		       "failed to create status file  %s\n", buffer);
 		return -ENOMEM;
@@ -536,7 +545,7 @@ int project4fs_create_hierarchy(struct super_block *sb,
 	 * thread as the thread-group list is double link list without any start
 	 * and end
 	 */
-	if (create_threads) {
+	if (unlikely(create_threads)) {
 		while_each_thread(task, thrd) {
 			/* Create at same hierarchy */
 			ret = project4fs_create_hierarchy(sb, root, thrd, 0);
@@ -555,7 +564,7 @@ int project4fs_create_hierarchy(struct super_block *sb,
 
 		/* Create at one lower hierarchy */
 		ret = project4fs_create_hierarchy(sb, mydir, child, 1);
-		if (ret)
+		if (unlikely(ret))
 			return ret;
 	}
 	return 0;
@@ -596,7 +605,7 @@ static int project4_fill_super (struct super_block *sb, void *data, int silent)
 	 * directory.
 	 */
 	root = project4_allocate_inode (sb, S_IFDIR | 0755);
-	if (!root) {
+	if (unlikely(!root)) {
 		printk(KERN_ERR "inode allocation failed\n");
 		return -ENOMEM;
 	}
@@ -608,7 +617,7 @@ static int project4_fill_super (struct super_block *sb, void *data, int silent)
 
 	/* Get a dentry to represent the directory in core. */
 	root_dentry = d_make_root(root);
-	if (! root_dentry) {
+	if (unlikely(!root_dentry)) {
 		/* Will try to free if usage count is 0 */
 		printk(KERN_ERR "dentry allocation for root failed\n");
 		iput(root);
