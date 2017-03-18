@@ -25,7 +25,7 @@
 
 #define PROJECT4_MAGIC 0xDEADBEEF
 #define TMPSIZE 20
-#define MAX_INFO 256
+#define MAX_INFO 1024
 
 /* Types of entry supported */
 enum project4_entry_type {
@@ -34,12 +34,11 @@ enum project4_entry_type {
 	STATUS_FILE
 };
 
-/* Types of states supported */
-static char *task_state[] = {"TASK_UNRUNNABLE", "TASK_RUNNABLE",
-				"TASK_STOPPED"};
+unsigned long task_vsize(struct mm_struct *);
 
 /* Types of tasks supported */
-static char *task_type[] = {"KERNEL_THREAD", "USER_THREAD"};
+static char *task_type_array[] = {"KERNEL_THREAD", "USER_THREAD",
+					"USER_PROCESS"};
 
 /* Array of string to print signal name */
 static char *signal_array[] = {"SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","SIGIOT",
@@ -47,6 +46,26 @@ static char *signal_array[] = {"SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","S
 	"SIGTERM","SIGSTKFLT","SIGCHLD","SIGCONT","SIGSTOP","SIGTSTP","SIGTTIN",
 	"SIGTTOU","SIGURG","SIGXCPU","SIGXFSZ","SIGVTALRM","SIGPROF","SIGWINCH",
 	"SIGIO","SIGPWR"};
+
+/* Types of states supported */
+static const char * const task_state_array[] = {
+	"R (running)",		/*   0 */
+	"S (sleeping)",		/*   1 */
+	"D (disk sleep)",	/*   2 */
+	"T (stopped)",		/*   4 */
+	"t (tracing stop)",	/*   8 */
+	"X (dead)",		/*  16 */
+	"Z (zombie)",		/*  32 */
+};
+
+static inline const char *get_task_state(struct task_struct *tsk)
+{
+	unsigned int state = (tsk->state | tsk->exit_state) & TASK_REPORT;
+
+	BUILD_BUG_ON(1 + ilog2(TASK_REPORT) != ARRAY_SIZE(task_state_array)-1);
+
+	return task_state_array[fls(state)];
+}
 
 /**
  * @brief Allocates the inode with given mode
@@ -108,16 +127,22 @@ static ssize_t project4_read_status_file(struct file *filp,
 	char buffer[MAX_INFO];
 	struct task_struct *task;
 	int type = 0;
-	int state = 0;
-	int length;
+	int length = 0;
 	pid_t my_pid;
+	pid_t my_tgid;
+	pid_t arg_pid;
+	struct mm_struct *mm;
+	unsigned long hiwater_vm, text, data, lib, total_vm, stack_vm;
+	int state, cpu;
+	unsigned long long start_time;
+	void *stack;
 
 	if (!buf || !filp || !offset) {
 		printk(KERN_ERR "Invalid Args for read status\n");
 		return -EINVAL;
 	}
 
-
+	/* For checking if using correct task struct */
 	my_pid = (pid_t)simple_strtol(filp->f_path.dentry->d_iname, NULL, 10);
 
 	task = (struct task_struct *) filp->private_data;
@@ -128,34 +153,91 @@ static ssize_t project4_read_status_file(struct file *filp,
 		return -EINVAL;
 	}
 
-	if (my_pid != task->pid) {
+	/* Lock for any access from task_struct */
+	task_lock(task);
+	arg_pid = task->pid;
+	my_tgid = task->tgid;
+	task_unlock(task);
+
+	if (my_pid != arg_pid) {
 		printk("Task struct has been allocated to new pid. Remount the filesystem\n");
 		return -EINVAL;
 	}
 
-	/* If mm is initialized then, it is user thread */
-	if (task->mm)
-		type = 1;
+	mm = get_task_mm(task);
 
-	/* State for the process */
-	if (task->state > 0)
-		state = 2;
-	else if (task->state < 0)
-		state = 0;
-	else
-		state = 1;
+	length += snprintf(buffer + length, 1024, "########## Status ###########\n");
 
 	/* Get the name of the task */
 	get_task_comm(tmp, task);
 
+	if (mm) {
+		type = 1;
+
+		task_lock(task);
+
+		hiwater_vm = mm->total_vm > mm->hiwater_vm ?
+						mm->total_vm : mm->hiwater_vm;
+		text = (PAGE_ALIGN(mm->end_code) -
+			(mm->start_code & PAGE_MASK)) >> 10;
+
+		data = mm->total_vm - mm->shared_vm - mm->stack_vm;
+
+		lib = (mm->exec_vm << (PAGE_SHIFT-10)) - text;
+
+		total_vm = mm->total_vm;
+
+		stack_vm = mm->stack_vm;
+
+		task_unlock(task);
+
+		length += snprintf(buffer + length, 1024, "Virtual_Memory_Size:\t%lu kB\n",
+				   (total_vm << (PAGE_SHIFT-10)));
+		length += snprintf(buffer + length, 1024, "Virtual_Memory_Peak:\t%lu kB\n",
+				   (hiwater_vm << (PAGE_SHIFT-10)));
+		length += snprintf(buffer + length, 1024, "Text_VM:\t%lu kB\n",
+				   (text << (PAGE_SHIFT-10)));
+		length += snprintf(buffer + length, 1024, "Lib_VM:\t%lu kB\n",
+				   (lib << (PAGE_SHIFT-10)));
+		length += snprintf(buffer + length, 1024, "Data_VM:\t%lu kB\n",
+				   (data << (PAGE_SHIFT-10)));
+		length += snprintf(buffer + length, 1024, "Stack_VM:\t%lu kB\n",
+				   (stack_vm << (PAGE_SHIFT-10)));
+	}
+
+	if (type == 1 && my_pid == my_tgid) {
+		type = 2;
+	}
+
+	task_lock(task);
+
+	state = fls((task->state | task->exit_state) & TASK_REPORT);
+
+	cpu = task_thread_info(task)->cpu;
+
+	start_time = task->start_time;
+
+	stack = task->stack;
+
+	task_unlock(task);
+
+	length += snprintf(buffer + length, 1024, "State:\t%s\n",
+			  task_state_array[state]);
+
+	length += snprintf(buffer+length, 1024, "Type:\t%s\nCpu\t%d\n",
+			  task_type_array[type],
+			  cpu);
+
 	/* Create the buffer to be copied in user space */
-	length = snprintf(buffer, 1024, "State: %s\nType: %s\nCpu: %d\nMonotonic Start time %lluNS\nName: %s\nStack: 0x%p\n",
-			  task_state[state],
-			  task_type[type],
-			  task_thread_info(task)->cpu,
-			  task->start_time,
+	length += snprintf(buffer+length, 1024, "Monotonic_Start_Time\t%lluns\nName:\t%s\nStack_Pointer:\t0x%p\n",
+			  start_time,
 			  tmp,
-			  task->stack);
+			  stack);
+
+	length += snprintf(buffer + length, 1024, "#############################\n");
+
+	if (mm)
+		mmput(mm);
 
 	/* For partial read support */
 	if (length < count + *offset) {
@@ -263,9 +345,8 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 	}
 
 	info.si_signo = sig_num;
-	info.si_code = SI_USER;
+	info.si_code = SI_KERNEL;
 	info.si_errno = 0;
-	info.si_int = 1234;
 	info.si_pid = 0;
 	info.si_uid = 0;
 
