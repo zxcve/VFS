@@ -151,7 +151,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 	task_unlock(task);
 
 	if (unlikely(my_pid != arg_pid)) {
-		printk("Task struct has been allocated to new pid. Remount the filesystem\n");
+		printk(KERN_ERR "Task struct pid changed after death. Remount the filesystem\n");
 		return -EINVAL;
 	}
 
@@ -224,12 +224,13 @@ static ssize_t project4_read_status_file(struct file *filp,
 	length += snprintf(buffer + length, 1024, "State:\t%s\n",
 			  task_state_array[state]);
 
-	if (state == 5) {
-		length += snprintf(buffer + length, 1024, "The type might be wrong as mm is deallocated\n");
+	/* This check is required as mm returned by get_task_mm is NULL, when
+	 * the process is killed */
+	if (state != 5) {
+		length += snprintf(buffer+length, 1024, "Type:\t%s\nCpu\t%d\n",
+				   task_type_array[type],
+				   cpu);
 	}
-	length += snprintf(buffer+length, 1024, "Type:\t%s\nCpu\t%d\n",
-			  task_type_array[type],
-			  cpu);
 
 	/* Create the buffer to be copied in user space */
 	length += snprintf(buffer+length, 1024, "Monotonic_Start_Time\t%lluns\nName:\t%s\nStack_Pointer:\t0x%p\n",
