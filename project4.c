@@ -58,15 +58,6 @@ static const char * const task_state_array[] = {
 	"Z (zombie)",		/*  32 */
 };
 
-static inline const char *get_task_state(struct task_struct *tsk)
-{
-	unsigned int state = (tsk->state | tsk->exit_state) & TASK_REPORT;
-
-	BUILD_BUG_ON(1 + ilog2(TASK_REPORT) != ARRAY_SIZE(task_state_array)-1);
-
-	return task_state_array[fls(state)];
-}
-
 /**
  * @brief Allocates the inode with given mode
  *
@@ -233,6 +224,9 @@ static ssize_t project4_read_status_file(struct file *filp,
 	length += snprintf(buffer + length, 1024, "State:\t%s\n",
 			  task_state_array[state]);
 
+	if (state == 5) {
+		length += snprintf(buffer + length, 1024, "The type might be wrong as mm is deallocated\n");
+	}
 	length += snprintf(buffer+length, 1024, "Type:\t%s\nCpu\t%d\n",
 			  task_type_array[type],
 			  cpu);
