@@ -47,6 +47,10 @@ static char *signal_array[] = {"SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","S
 	"SIGTTOU","SIGURG","SIGXCPU","SIGXFSZ","SIGVTALRM","SIGPROF","SIGWINCH",
 	"SIGIO","SIGPWR"};
 
+static const char * const bool_state[] = {
+	"NO","YES"
+};
+
 /* Types of states supported */
 static const char * const task_state_array[] = {
 	"R (running)",		/*   0 */
@@ -124,7 +128,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 	pid_t arg_pid;
 	struct mm_struct *mm;
 	unsigned long hiwater_vm, text, data, lib, total_vm, stack_vm;
-	int state, cpu;
+	int state, cpu, on_rq, prio, nr_cpu;
 	unsigned long long start_time;
 	void *stack;
 
@@ -157,7 +161,10 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	mm = get_task_mm(task);
 
-	length += snprintf(buffer + length, 1024, "########## Status ###########\n");
+	length += snprintf(buffer + length, MAX_INFO, "########## Status ###########\n");
+
+	length += snprintf(buffer + length, MAX_INFO, "Pid:\t%d\nTgid:\t%d\n",
+			   arg_pid, my_tgid);
 
 	/* Get the name of the task */
 	get_task_comm(tmp, task);
@@ -186,17 +193,17 @@ static ssize_t project4_read_status_file(struct file *filp,
 		/* Not sure if snprintf sleeps hence release the lock and used
 		 * copied buffers.
 		 */
-		length += snprintf(buffer + length, 1024, "Virtual_Memory_Size:\t%lu kB\n",
+		length += snprintf(buffer + length, MAX_INFO, "Virtual_Memory_Size:\t%lu kB\n",
 				   (total_vm << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, 1024, "Virtual_Memory_Peak:\t%lu kB\n",
+		length += snprintf(buffer + length, MAX_INFO, "Virtual_Memory_Peak:\t%lu kB\n",
 				   (hiwater_vm << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, 1024, "Text_VM:\t%lu kB\n",
+		length += snprintf(buffer + length, MAX_INFO, "Text_VM:\t%lu kB\n",
 				   (text << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, 1024, "Lib_VM:\t%lu kB\n",
+		length += snprintf(buffer + length, MAX_INFO, "Lib_VM:\t%lu kB\n",
 				   (lib << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, 1024, "Data_VM:\t%lu kB\n",
+		length += snprintf(buffer + length, MAX_INFO, "Data_VM:\t%lu kB\n",
 				   (data << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, 1024, "Stack_VM:\t%lu kB\n",
+		length += snprintf(buffer + length, MAX_INFO, "Stack_VM:\t%lu kB\n",
 				   (stack_vm << (PAGE_SHIFT-10)));
 	}
 
@@ -216,29 +223,36 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	stack = task->stack;
 
+	on_rq = task->on_rq;
+
+	prio = task->prio;
+
+	nr_cpu = task->nr_cpus_allowed;
 	task_unlock(task);
 
 	/* Not sure if snprintf sleeps hence release the lock and used
 	 * copied buffers.
 	 */
-	length += snprintf(buffer + length, 1024, "State:\t%s\n",
-			  task_state_array[state]);
+	length += snprintf(buffer + length, MAX_INFO, "State:\t%s\nNum_Cpu_Allowed:\t%d\n",
+			  task_state_array[state], nr_cpu);
 
+	length += snprintf(buffer + length, MAX_INFO, "On_Run_queue:\t%s\nEffective_Priority:\t%d\n",
+			   bool_state[on_rq], prio);
 	/* This check is required as mm returned by get_task_mm is NULL, when
 	 * the process is killed */
-	if (state != 5) {
-		length += snprintf(buffer+length, 1024, "Type:\t%s\nCpu\t%d\n",
+	if (state != 5 && state != 6) {
+		length += snprintf(buffer+length, MAX_INFO, "Type:\t%s\nCpu\t%d\n",
 				   task_type_array[type],
 				   cpu);
 	}
 
 	/* Create the buffer to be copied in user space */
-	length += snprintf(buffer+length, 1024, "Monotonic_Start_Time\t%lluns\nName:\t%s\nStack_Pointer:\t0x%p\n",
+	length += snprintf(buffer+length, MAX_INFO, "Monotonic_Start_Time\t%lluns\nName:\t%s\nStack_Pointer:\t0x%p\n",
 			  start_time,
 			  tmp,
 			  stack);
 
-	length += snprintf(buffer + length, 1024, "#############################\n");
+	length += snprintf(buffer + length, MAX_INFO, "#############################\n");
 
 	if (likely(mm))
 		mmput(mm);
@@ -309,9 +323,14 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 {
 	struct task_struct *task;
 	char tmp[TMPSIZE];
-	struct siginfo info;
 	int sig_num;
 	int ret;
+
+	/* NOTE: I am not adding specific checks for case when task struct got
+	 * deallocated and reallocated to some other pid. I expect user to not
+	 * send signal to a process who has died. I can just alleviate this
+	 * problem by having pid check but it also not solve the actual problem.
+	 */
 
 	if (unlikely(!buf || !filp || !offset)) {
 		printk(KERN_ERR "Invalid Args for write signal\n");
@@ -348,14 +367,8 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 		return -EINVAL;
 	}
 
-	info.si_signo = sig_num;
-	info.si_code = SI_KERNEL;
-	info.si_errno = 0;
-	info.si_pid = 0;
-	info.si_uid = 0;
-
 	/* Send the signal to the desired process */
-	ret = send_sig_info(sig_num, &info, task);
+	ret = send_sig(sig_num, task, 1);
 	if (unlikely(ret < 0)) {
 		printk(KERN_ERR "Signal %s<%d> failed PID<%d> TID<%d>\n",
 			signal_array[sig_num-1],sig_num,task->tgid, task->pid);
