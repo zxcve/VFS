@@ -437,11 +437,12 @@ static struct dentry *project4_create_entry(struct super_block *sb,
 	/* Set the modes for inode */
 	switch (type) {
 		case DIRECTORY:
-			mode = S_IFDIR | 0644;
+			mode = S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO;
 			break;
 		case SIGNAL_FILE:
 		case STATUS_FILE:
-			mode = S_IFREG | 0644;
+			mode = S_IFREG | S_IRUSR | S_IWUSR |
+				S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
 			break;
 		default:
 			printk(KERN_ERR "Unknown entry requested to create\n");
@@ -599,7 +600,8 @@ static int project4_fill_super (struct super_block *sb, void *data, int silent)
 	 * don't have to mess with actually *doing* things inside this
 	 * directory.
 	 */
-	root = project4_allocate_inode (sb, S_IFDIR | 0755);
+	root = project4_allocate_inode (sb, S_IFDIR | S_IRWXU |
+					S_IRWXG | S_IRWXO);
 	if (unlikely(!root)) {
 		printk(KERN_ERR "inode allocation failed\n");
 		return -ENOMEM;
