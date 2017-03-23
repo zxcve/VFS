@@ -36,30 +36,33 @@ enum project4_entry_type {
 };
 
 /* Types of tasks supported */
-static char *task_type_array[] = {"KERNEL_THREAD", "USER_THREAD",
-	"USER_PROCESS"};
+static const char * const task_type_array[] = {"KERNEL_THREAD", "USER_THREAD",
+	"USER_PROCESS"
+};
 
 /* Array of string to print signal name */
-static char *signal_array[] = {"SIGHUP","SIGINT","SIGQUIT","SIGILL",
-	"SIGTRAP","SIGIOT","SIGBUS","SIGFPE","SIGKILL","SIGUSR1",
+static const char * const signal_array[] = {"SIGHUP","SIGINT","SIGQUIT",
+	"SIGILL", "SIGTRAP","SIGIOT","SIGBUS","SIGFPE","SIGKILL","SIGUSR1",
 	"SIGSEGV","SIGUSR2","SIGPIPE","SIGALRM","SIGTERM","SIGSTKFLT",
 	"SIGCHLD","SIGCONT","SIGSTOP","SIGTSTP","SIGTTIN","SIGTTOU",
 	"SIGURG","SIGXCPU","SIGXFSZ","SIGVTALRM","SIGPROF","SIGWINCH",
-	"SIGIO","SIGPWR"};
+	"SIGIO","SIGPWR"
+};
 
-static const char * const bool_state[] = {
-	"NO","YES"
+static const char * const sched_policy_array[] = {
+	"SCHED_NORMAL", "SCHED_FIFO", "SCHED_RR"
+	"SCHED_BATCH", "SCHED_IDLE", "SCHED_DEADLINE"
 };
 
 /* Types of states supported */
 static const char * const task_state_array[] = {
-	"R (running)",		/*   0 */
-	"S (sleeping)",		/*   1 */
-	"D (disk sleep)",	/*   2 */
-	"T (stopped)",		/*   4 */
-	"t (tracing stop)",	/*   8 */
-	"X (dead)",		/*  16 */
-	"Z (zombie)",		/*  32 */
+	"TASK_RUNNING",		/*   0 */
+	"TASK_INTERRUPTIBLE",	/*   1 */
+	"TASK_UNINTERRUPTIBLE",	/*   2 */
+	"__TASK_STOPPED",	/*   4 */
+	"__TASK_TRACED",	/*   8 */
+	"EXIT_DEAD",		/*  16 */
+	"EXIT_ZOMBIE",		/*  32 */
 };
 
 /**
@@ -175,7 +178,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 	struct mm_struct *mm;
 	unsigned long nvcsw,nivcsw;
 	unsigned long hiwater_vm, text, data, lib, total_vm, stack_vm;
-	int state, cpu, on_rq, prio, nice;
+	int state, cpu, prio, nice, policy;
 	unsigned long long start_time;
 	void *stack;
 
@@ -288,8 +291,6 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	stack = (void *)task->thread.sp;
 
-	on_rq = task->on_rq;
-
 	prio = task->prio - MAX_RT_PRIO;
 
 	nice = PRIO_TO_NICE(task->static_prio);
@@ -298,8 +299,11 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	nivcsw = task->nivcsw;
 
+	policy = task->policy;
+
 	if (task->real_parent)
 		ppid = task->real_parent->pid;
+
 	task_unlock(task);
 
 	/* Not sure if snprintf sleeps hence release the lock and used
@@ -309,10 +313,11 @@ static ssize_t project4_read_status_file(struct file *filp,
 			   "Pid:\t%d\nTgid:\t%d\n",
 			   arg_pid, my_tgid);
 
-	if (ppid != -1)
+	if (arg_pid != 0)
 		length += snprintf(buffer + length,
 				   PROJECT4_STATUS_BUFFER_SIZE, "PPid:\t%d\n",
 				   ppid);
+
 	length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
 			   "State:\t%s\n",
 			  task_state_array[state]);
@@ -326,21 +331,24 @@ static ssize_t project4_read_status_file(struct file *filp,
 			  nivcsw);
 
 	length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
-			   "On_Run_queue:\t%s\nPriority:\t%d\nNice:\t%d\n",
-			   bool_state[on_rq], prio, nice);
+			   "Sched_Policy:\t%s\n", sched_policy_array[policy]);
+
+	length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+			   "Priority:\t%d\nNice:\t%d\n",
+			   prio, nice);
 
 	/* This check is required as mm returned by get_task_mm is NULL, when
 	 * the process is killed */
 	if (state != 5 && state != 6) {
 		length += snprintf(buffer+length, PROJECT4_STATUS_BUFFER_SIZE,
-				   "Type:\t%s\nCpu\t%d\n",
+				   "Type:\t%s\nCpu:\t%d\n",
 				   task_type_array[type],
 				   cpu);
 	}
 
 	/* Create the buffer to be copied in user space */
 	length += snprintf(buffer+length, PROJECT4_STATUS_BUFFER_SIZE,
-			   "Boot_Based_Start_Time\t%lluns\nName:\t%s\nCurrent_Stack_Pointer:\t0x%p\n",
+			   "Boot_Based_Start_Time:\t%lluns\nName:\t%s\nCurrent_Stack_Pointer:\t0x%p\n",
 			  start_time,
 			  tmp,
 			  stack);
