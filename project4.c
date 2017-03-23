@@ -160,8 +160,8 @@ static ssize_t project4_read_status_file(struct file *filp,
 	 * has been killed, followed by the task struct getting deallocated and
 	 * reallocated for different task but same pid. :) Difficult scenario to
 	 * create. This is my implementation limitations. The only other way was
-	 * to copy entire data in mount time. I did not proceed that way due to
-	 * inefficiency in implementation.
+	 * to copy entire data in mount time. I did not proceed that way as the
+	 * problem always exists for signal file in implementation.
 	 */
 	char tmp[TASK_COMM_LEN];
 	char *buffer;
@@ -428,7 +428,7 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 	/* NOTE: I am not adding specific checks for case when task struct got
 	 * deallocated and reallocated to some other pid. I expect user to not
 	 * send signal to a process who has died. I can just alleviate this
-	 * problem by having pid check but it also not solve the actual problem.
+	 * problem by having pid check but it does not solve the actual problem.
 	 */
 
 	if (unlikely(!buf || !filp || !offset)) {
