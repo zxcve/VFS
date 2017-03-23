@@ -91,11 +91,11 @@ static void project4_stack_trace(struct task_struct *task,
 	if (!err) {
 		save_stack_trace_tsk(task, &trace);
 
-		if (trace.nr_entries > 0)
+		if (trace.nr_entries > 1)
 			*length += snprintf(buffer+*length,
 					    PROJECT4_STATUS_BUFFER_SIZE, "Stack_Trace:\n");
 
-		for (i = 0; i < trace.nr_entries; i++) {
+		for (i = 0; i < trace.nr_entries - 1; i++) {
 			*length += snprintf(buffer+*length,
 					    PROJECT4_STATUS_BUFFER_SIZE, "[<%pK>] %pS\n",
 					    (void *)entries[i],
