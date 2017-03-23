@@ -23,9 +23,10 @@
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
 
+#define PROJECT4_STACK_DEPTH	64
 #define PROJECT4_MAGIC 0xDEADBEEF
-#define TMPSIZE 20
-#define MAX_INFO 1024
+#define PROJECT4_SIGNAL_BUFFER_SIZE 20
+#define PROJECT4_STATUS_BUFFER_SIZE 1024
 
 /* Types of entry supported */
 enum project4_entry_type {
@@ -39,10 +40,11 @@ static char *task_type_array[] = {"KERNEL_THREAD", "USER_THREAD",
 	"USER_PROCESS"};
 
 /* Array of string to print signal name */
-static char *signal_array[] = {"SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","SIGIOT",
-	"SIGBUS","SIGFPE","SIGKILL","SIGUSR1","SIGSEGV","SIGUSR2","SIGPIPE","SIGALRM",
-	"SIGTERM","SIGSTKFLT","SIGCHLD","SIGCONT","SIGSTOP","SIGTSTP","SIGTTIN",
-	"SIGTTOU","SIGURG","SIGXCPU","SIGXFSZ","SIGVTALRM","SIGPROF","SIGWINCH",
+static char *signal_array[] = {"SIGHUP","SIGINT","SIGQUIT","SIGILL",
+	"SIGTRAP","SIGIOT","SIGBUS","SIGFPE","SIGKILL","SIGUSR1",
+	"SIGSEGV","SIGUSR2","SIGPIPE","SIGALRM","SIGTERM","SIGSTKFLT",
+	"SIGCHLD","SIGCONT","SIGSTOP","SIGTSTP","SIGTTIN","SIGTTOU",
+	"SIGURG","SIGXCPU","SIGXFSZ","SIGVTALRM","SIGPROF","SIGWINCH",
 	"SIGIO","SIGPWR"};
 
 static const char * const bool_state[] = {
@@ -60,8 +62,13 @@ static const char * const task_state_array[] = {
 	"Z (zombie)",		/*  32 */
 };
 
-#define MAX_STACK_TRACE_DEPTH	64
-
+/**
+ * @brief Walks across the stack trace and finds valid symbols
+ *
+ * @param task Task Struct Pointer
+ * @param buffer Buffer for copying the stack trace
+ * @param length Pointer to the length buffer
+ */
 static void project4_stack_trace(struct task_struct *task,
 				 char *buffer, int *length)
 {
@@ -71,12 +78,12 @@ static void project4_stack_trace(struct task_struct *task,
 	int err;
 	int i;
 
-	entries = kmalloc(MAX_STACK_TRACE_DEPTH * sizeof(*entries), GFP_KERNEL);
+	entries = kmalloc(PROJECT4_STACK_DEPTH * sizeof(*entries), GFP_KERNEL);
 	if (!entries)
 		return;
 
 	trace.nr_entries	= 0;
-	trace.max_entries	= MAX_STACK_TRACE_DEPTH;
+	trace.max_entries	= PROJECT4_STACK_DEPTH;
 	trace.entries		= entries;
 	trace.skip		= 0;
 
@@ -85,15 +92,16 @@ static void project4_stack_trace(struct task_struct *task,
 		save_stack_trace_tsk(task, &trace);
 
 		for (i = 0; i < trace.nr_entries; i++) {
-			*length += snprintf(buffer+*length, MAX_INFO, "[<%pK>] %pS\n",
-				   (void *)entries[i], (void *)entries[i]);
+			*length += snprintf(buffer+*length,
+					    PROJECT4_STATUS_BUFFER_SIZE, "[<%pK>] %pS\n",
+					    (void *)entries[i],
+					    (void *)entries[i]);
 		}
 		mutex_unlock(&task->signal->cred_guard_mutex);
 	}
 	kfree(entries);
 #endif
 }
-
 
 /**
  * @brief Allocates the inode with given mode
@@ -195,7 +203,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 	}
 
 
-	buffer = kmalloc(MAX_INFO, GFP_KERNEL);
+	buffer = kmalloc(PROJECT4_STATUS_BUFFER_SIZE, GFP_KERNEL);
 
 	if (!buffer) {
 		printk(KERN_ERR "Buffer allocation for status file failed\n");
@@ -204,7 +212,8 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	mm = get_task_mm(task);
 
-	length += snprintf(buffer + length, MAX_INFO, "########## Status ###########\n");
+	length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+			   "########## Status ###########\n");
 
 
 	/* Get the name of the task */
@@ -234,17 +243,28 @@ static ssize_t project4_read_status_file(struct file *filp,
 		/* Not sure if snprintf sleeps hence release the lock and used
 		 * copied buffers.
 		 */
-		length += snprintf(buffer + length, MAX_INFO, "Virtual_Memory_Size:\t%lu kB\n",
+		length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+				   "Virtual_Memory_Size:\t%lu kB\n",
 				   (total_vm << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, MAX_INFO, "Virtual_Memory_Peak:\t%lu kB\n",
+
+		length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+				   "Virtual_Memory_Peak:\t%lu kB\n",
 				   (hiwater_vm << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, MAX_INFO, "Text_VM:\t%lu kB\n",
+
+		length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+				   "Text_VM:\t%lu kB\n",
 				   (text << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, MAX_INFO, "Lib_VM:\t%lu kB\n",
+
+		length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+				   "Lib_VM:\t%lu kB\n",
 				   (lib << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, MAX_INFO, "Data_VM:\t%lu kB\n",
+
+		length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+				   "Data_VM:\t%lu kB\n",
 				   (data << (PAGE_SHIFT-10)));
-		length += snprintf(buffer + length, MAX_INFO, "Stack_VM:\t%lu kB\n",
+
+		length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+				   "Stack_VM:\t%lu kB\n",
 				   (stack_vm << (PAGE_SHIFT-10)));
 	}
 
@@ -281,40 +301,50 @@ static ssize_t project4_read_status_file(struct file *filp,
 	/* Not sure if snprintf sleeps hence release the lock and used
 	 * copied buffers.
 	 */
-	length += snprintf(buffer + length, MAX_INFO, "Pid:\t%d\nTgid:\t%d\n",
+	length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+			   "Pid:\t%d\nTgid:\t%d\n",
 			   arg_pid, my_tgid);
 
 	if (ppid != -1)
-		length += snprintf(buffer + length, MAX_INFO, "PPid:\t%d\n",
+		length += snprintf(buffer + length,
+				   PROJECT4_STATUS_BUFFER_SIZE, "PPid:\t%d\n",
 				   ppid);
-	length += snprintf(buffer + length, MAX_INFO, "State:\t%s\n",
+	length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+			   "State:\t%s\n",
 			  task_state_array[state]);
 
-	length += snprintf(buffer + length, MAX_INFO, "Voluntary_Context_Switch:\t%lu\n",
+	length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+			   "Voluntary_Context_Switch:\t%lu\n",
 			  nvcsw);
 
-	length += snprintf(buffer + length, MAX_INFO, "NonVoluntary_Context_Switch:\t%lu\n",
+	length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+			   "NonVoluntary_Context_Switch:\t%lu\n",
 			  nivcsw);
 
-	length += snprintf(buffer + length, MAX_INFO, "On_Run_queue:\t%s\nPriority:\t%d\nNice:\t%d\n",
+	length += snprintf(buffer + length, PROJECT4_STATUS_BUFFER_SIZE,
+			   "On_Run_queue:\t%s\nPriority:\t%d\nNice:\t%d\n",
 			   bool_state[on_rq], prio, nice);
+
 	/* This check is required as mm returned by get_task_mm is NULL, when
 	 * the process is killed */
 	if (state != 5 && state != 6) {
-		length += snprintf(buffer+length, MAX_INFO, "Type:\t%s\nCpu\t%d\n",
+		length += snprintf(buffer+length, PROJECT4_STATUS_BUFFER_SIZE,
+				   "Type:\t%s\nCpu\t%d\n",
 				   task_type_array[type],
 				   cpu);
 	}
 
 	/* Create the buffer to be copied in user space */
-	length += snprintf(buffer+length, MAX_INFO, "Boot_Based_Start_Time\t%lluns\nName:\t%s\nStack_Pointer:\t0x%p\n",
+	length += snprintf(buffer+length, PROJECT4_STATUS_BUFFER_SIZE,
+			   "Boot_Based_Start_Time\t%lluns\nName:\t%s\nStack_Pointer:\t0x%p\n",
 			  start_time,
 			  tmp,
 			  stack);
 
 	project4_stack_trace(task, buffer, &length);
 
-	length += snprintf(buffer + length, MAX_INFO, "#############################\n");
+	length += snprintf(buffer + length,
+			   PROJECT4_STATUS_BUFFER_SIZE, "#############################\n");
 
 	if (likely(mm))
 		mmput(mm);
@@ -387,7 +417,7 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 				   size_t count, loff_t *offset)
 {
 	struct task_struct *task;
-	char tmp[TMPSIZE];
+	char tmp[PROJECT4_SIGNAL_BUFFER_SIZE];
 	int sig_num;
 	int ret;
 
@@ -415,7 +445,7 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
 		return -EINVAL;
 	}
 
-	memset(tmp, 0, TMPSIZE);
+	memset(tmp, 0, PROJECT4_SIGNAL_BUFFER_SIZE);
 
 	/* Copy the signal from user */
 	if (unlikely(copy_from_user(tmp, buf, count))) {
