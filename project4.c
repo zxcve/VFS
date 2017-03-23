@@ -91,6 +91,10 @@ static void project4_stack_trace(struct task_struct *task,
 	if (!err) {
 		save_stack_trace_tsk(task, &trace);
 
+		if (trace.nr_entries > 0)
+			*length += snprintf(buffer+*length,
+					    PROJECT4_STATUS_BUFFER_SIZE, "Stack_Trace:\n");
+
 		for (i = 0; i < trace.nr_entries; i++) {
 			*length += snprintf(buffer+*length,
 					    PROJECT4_STATUS_BUFFER_SIZE, "[<%pK>] %pS\n",
@@ -282,7 +286,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	start_time = task->real_start_time;
 
-	stack = task->stack;
+	stack = (void *)task->thread.sp;
 
 	on_rq = task->on_rq;
 
@@ -336,7 +340,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	/* Create the buffer to be copied in user space */
 	length += snprintf(buffer+length, PROJECT4_STATUS_BUFFER_SIZE,
-			   "Boot_Based_Start_Time\t%lluns\nName:\t%s\nStack_Pointer:\t0x%p\n",
+			   "Boot_Based_Start_Time\t%lluns\nName:\t%s\nCurrent_Stack_Pointer:\t0x%p\n",
 			  start_time,
 			  tmp,
 			  stack);
