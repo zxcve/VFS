@@ -34,11 +34,9 @@ enum project4_entry_type {
 	STATUS_FILE
 };
 
-unsigned long task_vsize(struct mm_struct *);
-
 /* Types of tasks supported */
 static char *task_type_array[] = {"KERNEL_THREAD", "USER_THREAD",
-					"USER_PROCESS"};
+	"USER_PROCESS"};
 
 /* Array of string to print signal name */
 static char *signal_array[] = {"SIGHUP","SIGINT","SIGQUIT","SIGILL","SIGTRAP","SIGIOT",
@@ -61,6 +59,41 @@ static const char * const task_state_array[] = {
 	"X (dead)",		/*  16 */
 	"Z (zombie)",		/*  32 */
 };
+
+#define MAX_STACK_TRACE_DEPTH	64
+
+static void project4_stack_trace(struct task_struct *task,
+				 char *buffer, int *length)
+{
+#ifdef CONFIG_STACKTRACE
+	struct stack_trace trace;
+	unsigned long *entries;
+	int err;
+	int i;
+
+	entries = kmalloc(MAX_STACK_TRACE_DEPTH * sizeof(*entries), GFP_KERNEL);
+	if (!entries)
+		return;
+
+	trace.nr_entries	= 0;
+	trace.max_entries	= MAX_STACK_TRACE_DEPTH;
+	trace.entries		= entries;
+	trace.skip		= 0;
+
+	err = mutex_lock_killable(&task->signal->cred_guard_mutex);
+	if (!err) {
+		save_stack_trace_tsk(task, &trace);
+
+		for (i = 0; i < trace.nr_entries; i++) {
+			*length += snprintf(buffer+*length, MAX_INFO, "[<%pK>] %pS\n",
+				   (void *)entries[i], (void *)entries[i]);
+		}
+		mutex_unlock(&task->signal->cred_guard_mutex);
+	}
+	kfree(entries);
+#endif
+}
+
 
 /**
  * @brief Allocates the inode with given mode
@@ -119,16 +152,18 @@ static ssize_t project4_read_status_file(struct file *filp,
 	 * inefficiency in implementation.
 	 */
 	char tmp[TASK_COMM_LEN];
-	char buffer[MAX_INFO];
+	char *buffer;
 	struct task_struct *task;
 	int type = 0;
 	int length = 0;
 	pid_t my_pid;
 	pid_t my_tgid;
 	pid_t arg_pid;
+	pid_t ppid = -1;
 	struct mm_struct *mm;
+	unsigned long nvcsw,nivcsw;
 	unsigned long hiwater_vm, text, data, lib, total_vm, stack_vm;
-	int state, cpu, on_rq, prio, nr_cpu;
+	int state, cpu, on_rq, prio, nice;
 	unsigned long long start_time;
 	void *stack;
 
@@ -159,12 +194,18 @@ static ssize_t project4_read_status_file(struct file *filp,
 		return -EINVAL;
 	}
 
+
+	buffer = kmalloc(MAX_INFO, GFP_KERNEL);
+
+	if (!buffer) {
+		printk(KERN_ERR "Buffer allocation for status file failed\n");
+		return -ENOMEM;
+	}
+
 	mm = get_task_mm(task);
 
 	length += snprintf(buffer + length, MAX_INFO, "########## Status ###########\n");
 
-	length += snprintf(buffer + length, MAX_INFO, "Pid:\t%d\nTgid:\t%d\n",
-			   arg_pid, my_tgid);
 
 	/* Get the name of the task */
 	get_task_comm(tmp, task);
@@ -219,25 +260,44 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	cpu = task_thread_info(task)->cpu;
 
-	start_time = task->start_time;
+	start_time = task->real_start_time;
 
 	stack = task->stack;
 
 	on_rq = task->on_rq;
 
-	prio = task->prio;
+	prio = task->prio - MAX_RT_PRIO;
 
-	nr_cpu = task->nr_cpus_allowed;
+	nice = PRIO_TO_NICE(task->static_prio);
+
+	nvcsw = task->nvcsw;
+
+	nivcsw = task->nivcsw;
+
+	if (task->real_parent)
+		ppid = task->real_parent->pid;
 	task_unlock(task);
 
 	/* Not sure if snprintf sleeps hence release the lock and used
 	 * copied buffers.
 	 */
-	length += snprintf(buffer + length, MAX_INFO, "State:\t%s\nNum_Cpu_Allowed:\t%d\n",
-			  task_state_array[state], nr_cpu);
+	length += snprintf(buffer + length, MAX_INFO, "Pid:\t%d\nTgid:\t%d\n",
+			   arg_pid, my_tgid);
 
-	length += snprintf(buffer + length, MAX_INFO, "On_Run_queue:\t%s\nEffective_Priority:\t%d\n",
-			   bool_state[on_rq], prio);
+	if (ppid != -1)
+		length += snprintf(buffer + length, MAX_INFO, "PPid:\t%d\n",
+				   ppid);
+	length += snprintf(buffer + length, MAX_INFO, "State:\t%s\n",
+			  task_state_array[state]);
+
+	length += snprintf(buffer + length, MAX_INFO, "Voluntary_Context_Switch:\t%lu\n",
+			  nvcsw);
+
+	length += snprintf(buffer + length, MAX_INFO, "NonVoluntary_Context_Switch:\t%lu\n",
+			  nivcsw);
+
+	length += snprintf(buffer + length, MAX_INFO, "On_Run_queue:\t%s\nPriority:\t%d\nNice:\t%d\n",
+			   bool_state[on_rq], prio, nice);
 	/* This check is required as mm returned by get_task_mm is NULL, when
 	 * the process is killed */
 	if (state != 5 && state != 6) {
@@ -247,10 +307,12 @@ static ssize_t project4_read_status_file(struct file *filp,
 	}
 
 	/* Create the buffer to be copied in user space */
-	length += snprintf(buffer+length, MAX_INFO, "Monotonic_Start_Time\t%lluns\nName:\t%s\nStack_Pointer:\t0x%p\n",
+	length += snprintf(buffer+length, MAX_INFO, "Boot_Based_Start_Time\t%lluns\nName:\t%s\nStack_Pointer:\t0x%p\n",
 			  start_time,
 			  tmp,
 			  stack);
+
+	project4_stack_trace(task, buffer, &length);
 
 	length += snprintf(buffer + length, MAX_INFO, "#############################\n");
 
@@ -265,11 +327,14 @@ static ssize_t project4_read_status_file(struct file *filp,
 	/* Perform copy to user */
 	if (unlikely(copy_to_user(buf + *offset, buffer, count))) {
 		printk("copying user space buffer failed\n");
+		kfree(buffer);
 		return -EFAULT;
 	}
 
 	/* Update the offset */
 	*offset += count;
+
+	kfree(buffer);
 
 	return count;
 }
@@ -388,7 +453,7 @@ static ssize_t project4_write_signal_file(struct file *filp, const char *buf,
  *
  * @return 0 Always
  */
-int project4_release (struct inode *inode, struct file *filep)
+static int project4_release (struct inode *inode, struct file *filep)
 {
 	return 0;
 }
@@ -502,7 +567,7 @@ static struct dentry *project4_create_entry(struct super_block *sb,
  *
  * @return 0 for success, -ENOMEM on failure
  */
-int project4fs_create_hierarchy(struct super_block *sb,
+static int project4fs_create_hierarchy(struct super_block *sb,
 				 struct dentry *root, struct task_struct *task,
 				 int create_threads)
 {
