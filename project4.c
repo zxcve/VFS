@@ -96,7 +96,7 @@ static void project4_stack_trace(struct task_struct *task,
 
 		if (trace.nr_entries > 1)
 			*length += snprintf(buffer+*length,
-					    PROJECT4_STATUS_BUFFER_SIZE, "Stack_Trace:\n");
+					    PROJECT4_STATUS_BUFFER_SIZE, "Kernel_Stack_Trace:\n");
 
 		for (i = 0; i < trace.nr_entries - 1; i++) {
 			*length += snprintf(buffer+*length,
@@ -180,7 +180,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 	unsigned long hiwater_vm, text, data, lib, total_vm, stack_vm;
 	int state, cpu, prio, nice, policy;
 	unsigned long long start_time;
-	void *stack;
+	unsigned long kernel_stack, user_stack;
 
 	if (unlikely(!buf || !filp || !offset)) {
 		printk(KERN_ERR "Invalid Args for read status\n");
@@ -289,7 +289,7 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	start_time = task->real_start_time;
 
-	stack = (void *)task->thread.sp;
+	kernel_stack = task->thread.sp;
 
 	prio = task->prio - MAX_RT_PRIO;
 
@@ -303,6 +303,9 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	if (task->real_parent)
 		ppid = task->real_parent->pid;
+
+	if (type != 0)
+		user_stack = task->thread.usersp;
 
 	task_unlock(task);
 
@@ -348,10 +351,14 @@ static ssize_t project4_read_status_file(struct file *filp,
 
 	/* Create the buffer to be copied in user space */
 	length += snprintf(buffer+length, PROJECT4_STATUS_BUFFER_SIZE,
-			   "Boot_Based_Start_Time:\t%lluns\nName:\t%s\nCurrent_Stack_Pointer:\t0x%p\n",
+			   "Boot_Based_Start_Time:\t%lluns\nName:\t%s\nKernel_Stack_Pointer:\t0x%lx\n",
 			  start_time,
 			  tmp,
-			  stack);
+			  kernel_stack);
+	if (type != 0)
+		length += snprintf(buffer+length, PROJECT4_STATUS_BUFFER_SIZE,
+				"User_Stack_Pointer:\t0x%lx\n",
+				user_stack);
 
 	project4_stack_trace(task, buffer, &length);
 
